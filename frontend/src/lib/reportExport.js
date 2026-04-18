@@ -1,7 +1,7 @@
 // src/lib/reportExport.js
 // Export engine: PDF, Excel, CSV for all FieldTrack reports
 
-import { format } from "date-fns";
+import { format, differenceInDays } from "date-fns";
 
 // ─── FORMAT HELPERS ───────────────────────────────────────────────────────────
 export function fmtKES(n) {
@@ -117,9 +117,10 @@ const BRAND = {
   white:  [255, 255, 255],
   muted:  [140, 149, 161],
   dim:    [74,  85,  104],
-  green:  [0,   224, 150],
-  amber:  [255, 171, 0],
+  green:  [0,   192, 150],
+  amber:  [255, 159, 67],
   red:    [255, 77,  79],
+  blue:   [59,  130, 246],
 };
 
 // ─── PDF EXPORT ───────────────────────────────────────────────────────────────
@@ -169,18 +170,31 @@ export async function exportPDF(config) {
       const x = 10 + i * statW;
       doc.setFillColor(...BRAND.card);
       doc.roundedRect(x, yPos, statW - 2, statH, 2, 2, "F");
-      doc.setFillColor(...BRAND.accent);
+      doc.setFillColor(...(stat.accentColor ?? BRAND.accent));
       doc.roundedRect(x, yPos, statW - 2, 1, 0.5, 0.5, "F");
       doc.setTextColor(...BRAND.muted);
       doc.setFontSize(6.5);
       doc.setFont("helvetica", "normal");
       doc.text(stat.label.toUpperCase(), x + 3, yPos + 7);
-      doc.setTextColor(...BRAND.accent);
+      doc.setTextColor(...(stat.accentColor ?? BRAND.accent));
       doc.setFontSize(10);
       doc.setFont("helvetica", "bold");
       doc.text(String(stat.value ?? "—"), x + 3, yPos + 15);
     });
     yPos += statH + 8;
+  }
+
+  // Section label
+  if (config.sectionLabel) {
+    doc.setFillColor(...BRAND.card);
+    doc.rect(10, yPos, pageW - 20, 7, "F");
+    doc.setFillColor(...BRAND.accent);
+    doc.rect(10, yPos, 2, 7, "F");
+    doc.setTextColor(...BRAND.accent);
+    doc.setFontSize(7.5);
+    doc.setFont("helvetica", "bold");
+    doc.text(config.sectionLabel, 15, yPos + 5);
+    yPos += 11;
   }
 
   // Data table
@@ -202,6 +216,7 @@ export async function exportPDF(config) {
       bodyStyles: { fillColor: [255, 255, 255], textColor: [30, 30, 30], fontSize: 7.5, cellPadding: 2.5, lineColor: [220, 225, 220], lineWidth: 0.1 },
       alternateRowStyles: { fillColor: [245, 248, 245] },
       columnStyles: config.columnStyles ?? {},
+      willDrawCell: config.willDrawCell,
       didDrawPage: () => {
         doc.setFillColor(...BRAND.dark);
         doc.rect(0, 0, pageW, 10, "F");
@@ -235,9 +250,293 @@ export async function exportPDF(config) {
   doc.save(config.filename || "report.pdf");
 }
 
+// ─── AGING BUCKET HELPER ──────────────────────────────────────────────────────
+function getAgingBucket(orderDate) {
+  const days = differenceInDays(new Date(), new Date(orderDate));
+  if (days <= 30)  return { label: "0–30 days",   color: BRAND.green };
+  if (days <= 60)  return { label: "31–60 days",  color: BRAND.accent };
+  if (days <= 90)  return { label: "61–90 days",  color: BRAND.amber };
+  return             { label: "90+ days",          color: BRAND.red };
+}
+
+// ─── ORDERS AGING / PAYMENT REPORT ───────────────────────────────────────────
+export async function exportOrdersReport({ orders, payments = [], dateRange, fmt = "pdf" }) {
+  // Build a map: orderId → { totalPaid, totalPending }
+  const payMap = {};
+  for (const p of payments) {
+    if (!payMap[p.order]) payMap[p.order] = { totalPaid: 0, totalPending: 0, payments: [] };
+    if (p.status === "approved") payMap[p.order].totalPaid += Number(p.amount || 0);
+    if (p.status === "pending")  payMap[p.order].totalPending += Number(p.amount || 0);
+    payMap[p.order].payments.push(p);
+  }
+
+  // Enrich orders with payment info
+  const enriched = orders.map((o) => {
+    const pm = payMap[o.id] ?? { totalPaid: 0, totalPending: 0, payments: [] };
+    const orderAmt = Number(o.order_amount || 0);
+    const balance  = orderAmt - pm.totalPaid;
+    const pct      = orderAmt > 0 ? Math.min(100, Math.round((pm.totalPaid / orderAmt) * 100)) : 0;
+    const aging    = o.status === "approved" && balance > 0
+      ? getAgingBucket(o.submitted_at || o.order_date || o.created)
+      : null;
+    return { ...o, _totalPaid: pm.totalPaid, _totalPending: pm.totalPending, _balance: balance, _pct: pct, _aging: aging };
+  });
+
+  // ── CSV / EXCEL ──
+  const headers = [
+    { label: "Order No",        key: "order_no" },
+    { label: "Date",            key: (r) => fmtDate(r.submitted_at || r.order_date) },
+    { label: "Staff",           key: (r) => r.expand?.staff?.name ?? "—" },
+    { label: "Customer",        key: "customer_name" },
+    { label: "Phone",           key: (r) => r.customer_phone || "—" },
+    { label: "Category",        key: "customer_category" },
+    { label: "County",          key: (r) => r.county || "—" },
+    { label: "Products",        key: (r) => r.product_description || "—" },
+    { label: "Order Amount",    key: (r) => Number(r.order_amount || 0) },
+    { label: "Status",          key: "status" },
+    { label: "Paid (Approved)", key: (r) => r._totalPaid },
+    { label: "Pending Payment", key: (r) => r._totalPending },
+    { label: "Balance Due",     key: (r) => r._balance },
+    { label: "% Paid",          key: (r) => `${r._pct}%` },
+    { label: "Aging Bucket",    key: (r) => r._aging?.label ?? (r._balance <= 0 ? "PAID" : "—") },
+    { label: "Notes",           key: (r) => r.notes || "—" },
+  ];
+
+  if (fmt === "csv") return exportCSV(enriched, headers, `orders-aging-${dateRange}.csv`);
+  if (fmt === "excel") {
+    // Two sheets: summary + aging
+    const agingOrders = enriched.filter((o) => o.status === "approved" && o._balance > 0);
+    return exportExcel([
+      { name: "Orders", headers, data: enriched },
+      {
+        name: "Aging — Unpaid Balances",
+        headers: headers.filter((h) => !["Products", "Notes", "Phone"].includes(h.label)),
+        data: agingOrders.sort((a, b) => b._balance - a._balance),
+      },
+    ], `orders-aging-${dateRange}.xlsx`);
+  }
+
+  // ── PDF ──
+  const approvedOrders  = enriched.filter((o) => o.status === "approved");
+  const totalOrderValue = enriched.reduce((s, o) => s + Number(o.order_amount || 0), 0);
+  const totalPaid       = approvedOrders.reduce((s, o) => s + o._totalPaid, 0);
+  const totalPending    = approvedOrders.reduce((s, o) => s + o._totalPending, 0);
+  const totalBalance    = approvedOrders.reduce((s, o) => s + Math.max(0, o._balance), 0);
+  const fullyPaid       = approvedOrders.filter((o) => o._balance <= 0).length;
+
+  // Aging buckets summary
+  const agingBuckets = { "0–30 days": 0, "31–60 days": 0, "61–90 days": 0, "90+ days": 0 };
+  for (const o of approvedOrders) {
+    if (o._aging) agingBuckets[o._aging.label] = (agingBuckets[o._aging.label] || 0) + o._balance;
+  }
+
+  const JsPDF = await getJsPDF();
+  const doc = new JsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+
+  // ── HEADER ──
+  doc.setFillColor(...BRAND.dark);
+  doc.rect(0, 0, pageW, 38, "F");
+  doc.setFillColor(...BRAND.accent);
+  doc.rect(0, 0, 5, 38, "F");
+  doc.setFillColor(...BRAND.card);
+  doc.roundedRect(10, 6, 26, 26, 2, 2, "F");
+  doc.setTextColor(...BRAND.accent);
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "bold");
+  doc.text("FT", 23, 21, { align: "center" });
+  doc.setFontSize(14);
+  doc.text("FieldTrack Kenya", 42, 16);
+  doc.setTextColor(...BRAND.white);
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.text("Orders — Payments & Aging Report", 42, 25);
+  doc.setTextColor(...BRAND.muted);
+  doc.setFontSize(7.5);
+  doc.text(dateRange, 42, 33);
+  doc.setFontSize(7);
+  doc.text(`Generated: ${fmtDateTime(new Date())}`, pageW - 10, 16, { align: "right" });
+  doc.text("CONFIDENTIAL", pageW - 10, 23, { align: "right" });
+
+  let y = 46;
+
+  // ── KPI STRIP ──
+  const kpis = [
+    { label: "TOTAL ORDERS",     value: enriched.length,              color: BRAND.accent },
+    { label: "TOTAL ORDER VALUE",value: fmtKES(totalOrderValue),      color: BRAND.accent },
+    { label: "TOTAL COLLECTED",  value: fmtKES(totalPaid),            color: BRAND.green  },
+    { label: "PENDING APPROVAL", value: fmtKES(totalPending),         color: BRAND.amber  },
+    { label: "OUTSTANDING BAL.", value: fmtKES(totalBalance),         color: BRAND.red    },
+    { label: "FULLY PAID",       value: `${fullyPaid} orders`,        color: BRAND.green  },
+    { label: "COLLECTION RATE",  value: totalOrderValue > 0 ? `${Math.round((totalPaid / totalOrderValue) * 100)}%` : "0%", color: BRAND.accent },
+  ];
+  const kpiW = (pageW - 20) / kpis.length;
+  kpis.forEach((k, i) => {
+    const x = 10 + i * kpiW;
+    doc.setFillColor(...BRAND.card);
+    doc.roundedRect(x, y, kpiW - 2, 18, 2, 2, "F");
+    doc.setFillColor(...k.color);
+    doc.roundedRect(x, y, kpiW - 2, 1, 0.5, 0.5, "F");
+    doc.setTextColor(...BRAND.muted);
+    doc.setFontSize(5.5);
+    doc.setFont("helvetica", "normal");
+    doc.text(k.label, x + 2.5, y + 6.5);
+    doc.setTextColor(...k.color);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.text(String(k.value), x + 2.5, y + 14);
+  });
+  y += 24;
+
+  // ── AGING SUMMARY BAR ──
+  doc.setFillColor(...BRAND.card);
+  doc.roundedRect(10, y, pageW - 20, 16, 2, 2, "F");
+  doc.setTextColor(...BRAND.muted);
+  doc.setFontSize(6.5);
+  doc.setFont("helvetica", "bold");
+  doc.text("OUTSTANDING BALANCE AGING", 14, y + 6);
+  const agingEntries = Object.entries(agingBuckets);
+  const agingW = (pageW - 60) / agingEntries.length;
+  const agingColors = [BRAND.green, BRAND.accent, BRAND.amber, BRAND.red];
+  agingEntries.forEach(([label, val], i) => {
+    const x = 55 + i * agingW;
+    doc.setFillColor(...agingColors[i]);
+    doc.roundedRect(x, y + 3, agingW - 4, 10, 1, 1, "F");
+    doc.setTextColor(...BRAND.dark);
+    doc.setFontSize(5.5);
+    doc.setFont("helvetica", "bold");
+    doc.text(label, x + (agingW - 4) / 2, y + 8, { align: "center" });
+    doc.text(`KES ${fmtKES(val)}`, x + (agingW - 4) / 2, y + 12, { align: "center" });
+  });
+  y += 22;
+
+  // ── MAIN TABLE ──
+  const pdfHeaders = [
+    { label: "Order No",     key: "order_no" },
+    { label: "Date",         key: (r) => fmtDate(r.submitted_at || r.order_date) },
+    { label: "Staff",        key: (r) => r.expand?.staff?.name ?? "—" },
+    { label: "Customer",     key: "customer_name" },
+    { label: "Category",     key: "customer_category" },
+    { label: "County",       key: (r) => r.county || "—" },
+    { label: "Order Amt",    key: (r) => fmtKES(r.order_amount) },
+    { label: "Status",       key: "status" },
+    { label: "Paid (Appr.)", key: (r) => r._totalPaid > 0 ? fmtKES(r._totalPaid) : "—" },
+    { label: "Pending",      key: (r) => r._totalPending > 0 ? fmtKES(r._totalPending) : "—" },
+    { label: "Balance",      key: (r) => r._balance <= 0 ? "PAID ✓" : fmtKES(r._balance) },
+    { label: "% Paid",       key: (r) => `${r._pct}%` },
+    { label: "Aging",        key: (r) => r._aging?.label ?? (r._balance <= 0 ? "PAID ✓" : "—") },
+  ];
+
+  const tableBody = enriched.map((row) =>
+    pdfHeaders.map((h) => typeof h.key === "function" ? h.key(row) : row[h.key] ?? "")
+  );
+
+  doc.autoTable({
+    head: [pdfHeaders.map((h) => h.label)],
+    body: tableBody,
+    startY: y,
+    margin: { left: 10, right: 10 },
+    tableLineColor: BRAND.dim,
+    tableLineWidth: 0.1,
+    headStyles: {
+      fillColor: BRAND.card,
+      textColor: BRAND.accent,
+      fontStyle: "bold",
+      fontSize: 7,
+      cellPadding: 2.5,
+      lineColor: BRAND.dim,
+      lineWidth: 0.1,
+    },
+    bodyStyles: {
+      fillColor: [255, 255, 255],
+      textColor: [30, 30, 30],
+      fontSize: 7,
+      cellPadding: 2.2,
+      lineColor: [220, 225, 220],
+      lineWidth: 0.1,
+    },
+    alternateRowStyles: { fillColor: [246, 249, 246] },
+    columnStyles: {
+      0:  { cellWidth: 26 },  // Order No
+      1:  { cellWidth: 20 },  // Date
+      2:  { cellWidth: 22 },  // Staff
+      3:  { cellWidth: 30 },  // Customer
+      4:  { cellWidth: 18 },  // Category
+      5:  { cellWidth: 18 },  // County
+      6:  { cellWidth: 20, halign: "right" },  // Order Amt
+      7:  { cellWidth: 18 },  // Status
+      8:  { cellWidth: 20, halign: "right" },  // Paid
+      9:  { cellWidth: 20, halign: "right" },  // Pending
+      10: { cellWidth: 20, halign: "right" },  // Balance
+      11: { cellWidth: 12, halign: "center" }, // % Paid
+      12: { cellWidth: 20 },  // Aging
+    },
+    willDrawCell: (data) => {
+      if (data.section === "body") {
+        const row = enriched[data.row.index];
+        if (!row) return;
+        // Color the Balance cell
+        if (data.column.index === 10) {
+          if (row._balance <= 0) {
+            data.cell.styles.textColor = BRAND.green;
+            data.cell.styles.fontStyle = "bold";
+          } else if (row._aging?.label === "90+ days") {
+            data.cell.styles.textColor = BRAND.red;
+            data.cell.styles.fontStyle = "bold";
+          } else if (row._aging?.label === "61–90 days") {
+            data.cell.styles.textColor = BRAND.amber;
+          }
+        }
+        // Color the % Paid cell
+        if (data.column.index === 11) {
+          if (row._pct >= 100) data.cell.styles.textColor = BRAND.green;
+          else if (row._pct >= 50) data.cell.styles.textColor = BRAND.amber;
+          else if (row._pct > 0)   data.cell.styles.textColor = BRAND.red;
+        }
+        // Color the Aging cell
+        if (data.column.index === 12 && row._aging) {
+          data.cell.styles.textColor = row._aging.color;
+          data.cell.styles.fontStyle = "bold";
+        }
+        // Color status cell
+        if (data.column.index === 7) {
+          if (row.status === "approved")         data.cell.styles.textColor = BRAND.green;
+          else if (row.status === "rejected")    data.cell.styles.textColor = BRAND.red;
+          else if (row.status === "pending_approval") data.cell.styles.textColor = BRAND.amber;
+        }
+      }
+    },
+    didDrawPage: () => {
+      doc.setFillColor(...BRAND.dark);
+      doc.rect(0, 0, pageW, 10, "F");
+      doc.setFillColor(...BRAND.accent);
+      doc.rect(0, 0, 5, 10, "F");
+      doc.setTextColor(...BRAND.muted);
+      doc.setFontSize(6.5);
+      doc.setFont("helvetica", "normal");
+      doc.text("FieldTrack Kenya — Orders Payments & Aging Report", 10, 6.5);
+    },
+  });
+
+  // ── FOOTER ──
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFillColor(...BRAND.dark);
+    doc.rect(0, pageH - 10, pageW, 10, "F");
+    doc.setFillColor(...BRAND.accent);
+    doc.rect(0, pageH - 10, 5, 10, "F");
+    doc.setTextColor(...BRAND.muted);
+    doc.setFontSize(6.5);
+    doc.text(`FieldTrack Kenya — Confidential  |  Page ${i} of ${pageCount}`, pageW / 2, pageH - 3.5, { align: "center" });
+  }
+
+  doc.save(`orders-aging-${dateRange}.pdf`);
+}
+
 // ─── SALES PERFORMANCE REPORT ─────────────────────────────────────────────────
 export async function exportSalesReport({ leaderboard, month, format: fmt = "pdf" }) {
-  // CSV / Excel — raw numbers so SUM works
   const headers = [
     { label: "#",          key: (_, i) => i + 1 },
     { label: "Staff Name", key: "staffName" },
@@ -248,7 +547,6 @@ export async function exportSalesReport({ leaderboard, month, format: fmt = "pdf
     { label: "% Achieved", key: (r) => `${r.pct}%` },
     { label: "Gap",        key: (r) => r.gap > 0 ? Number(r.gap || 0) : "✅ HIT" },
   ];
-  // PDF — formatted for readability
   const pdfHeaders = [
     { label: "#",          key: (_, i) => i + 1 },
     { label: "Staff Name", key: "staffName" },
@@ -280,63 +578,6 @@ export async function exportSalesReport({ leaderboard, month, format: fmt = "pdf
   });
 }
 
-// ─── ORDERS REPORT ────────────────────────────────────────────────────────────
-export async function exportOrdersReport({ orders, dateRange, fmt = "pdf" }) {
-  // CSV / Excel — raw numbers
-  const headers = [
-    { label: "Order No",    key: "order_no" },
-    { label: "Date",        key: (r) => fmtDate(r.submitted_at || r.order_date) },
-    { label: "Staff",       key: (r) => r.expand?.staff?.name ?? r.staff ?? "—" },
-    { label: "Customer",    key: "customer_name" },
-    { label: "Phone",       key: (r) => r.customer_phone || "—" },
-    { label: "Category",    key: "customer_category" },
-    { label: "Products",    key: (r) => r.product_description || "—" },
-    { label: "Amount",      key: (r) => Number(r.order_amount || 0) },
-    { label: "Status",      key: "status" },
-    { label: "County",      key: (r) => r.county || "—" },
-    { label: "Notes",       key: (r) => r.notes || "—" },
-  ];
-  // PDF — formatted
-  const pdfHeaders = [
-    { label: "Order No",    key: "order_no" },
-    { label: "Date",        key: (r) => fmtDate(r.submitted_at || r.order_date) },
-    { label: "Staff",       key: (r) => r.expand?.staff?.name ?? r.staff ?? "—" },
-    { label: "Customer",    key: "customer_name" },
-    { label: "Phone",       key: (r) => r.customer_phone || "—" },
-    { label: "Category",    key: "customer_category" },
-    { label: "Products",    key: (r) => r.product_description || "—" },
-    { label: "Amount",      key: (r) => fmtKES(r.order_amount) },
-    { label: "Status",      key: "status" },
-    { label: "County",      key: (r) => r.county || "—" },
-    { label: "Notes",       key: (r) => r.notes || "—" },
-  ];
-
-  if (fmt === "csv") return exportCSV(orders, headers, `orders-${dateRange}.csv`);
-  if (fmt === "excel") return exportExcel([{ name: "Orders", headers, data: orders }], `orders-${dateRange}.xlsx`);
-
-  const total       = orders.reduce((s, o) => s + Number(o.order_amount || 0), 0);
-  const approved    = orders.filter((o) => o.status === "approved");
-  const rejected    = orders.filter((o) => o.status === "rejected");
-  const pending     = orders.filter((o) => o.status === "pending_approval");
-  const approvedVal = approved.reduce((s, o) => s + Number(o.order_amount || 0), 0);
-  const rejectedVal = rejected.reduce((s, o) => s + Number(o.order_amount || 0), 0);
-
-  return exportPDF({
-    title: "Orders Report",
-    subtitle: dateRange,
-    landscape: true,
-    stats: [
-      { label: "Total Orders",    value: orders.length },
-      { label: "Total Value",     value: fmtKES(total) },
-      { label: "Approved",        value: `${approved.length} — ${fmtKES(approvedVal)}` },
-      { label: "Pending",         value: pending.length },
-      { label: "Rejected",        value: `${rejected.length} — ${fmtKES(rejectedVal)}` },
-    ],
-    table: { headers: pdfHeaders, data: orders },
-    filename: `orders-${dateRange}.pdf`,
-  });
-}
-
 // ─── FARMER VISITS REPORT ─────────────────────────────────────────────────────
 export async function exportFarmerVisitsReport({ visits, dateRange, fmt = "pdf" }) {
   const headers = [
@@ -361,15 +602,11 @@ export async function exportFarmerVisitsReport({ visits, dateRange, fmt = "pdf" 
     { label: "Next Visit",     key: (r) => r.next_visit_date || "—" },
     { label: "Notes",          key: (r) => r.notes || "—" },
   ];
-
   if (fmt === "csv") return exportCSV(visits, headers, `farm-visits-${dateRange}.csv`);
   if (fmt === "excel") return exportExcel([{ name: "Farmer Visits", headers, data: visits }], `farm-visits-${dateRange}.xlsx`);
-
   const counties   = [...new Set(visits.map((v) => v.county).filter(Boolean))];
   const totalAcres = visits.reduce((s, v) => s + Number(v.acreage || 0), 0);
   const converted  = visits.filter((v) => v.visit_outcome === "purchased").length;
-
-  // PDF uses fewer columns to fit landscape
   const pdfHeaders = [
     { label: "Staff",      key: (r) => r.expand?.staff?.name ?? "—" },
     { label: "Farmer",     key: "farmer_name" },
@@ -386,7 +623,6 @@ export async function exportFarmerVisitsReport({ visits, dateRange, fmt = "pdf" 
     { label: "Sold",       key: (r) => r.products_sold || "—" },
     { label: "Next Visit", key: (r) => r.next_visit_date || "—" },
   ];
-
   return exportPDF({
     title: "Farmer Visits Report",
     subtitle: dateRange,
@@ -405,7 +641,6 @@ export async function exportFarmerVisitsReport({ visits, dateRange, fmt = "pdf" 
 
 // ─── LEADERBOARD REPORT ───────────────────────────────────────────────────────
 export async function exportLeaderboardReport({ leaderboard, month, fmt = "pdf" }) {
-  // CSV / Excel — raw numbers
   const headers = [
     { label: "#",           key: (_, i) => i + 1 },
     { label: "Staff",       key: "staffName" },
@@ -420,7 +655,6 @@ export async function exportLeaderboardReport({ leaderboard, month, fmt = "pdf" 
     { label: "Agrovet",     key: (r) => Number(r.byCategory?.agrovet || 0) },
     { label: "Farmer",      key: (r) => Number(r.byCategory?.farmer || 0) },
   ];
-  // PDF — formatted
   const pdfHeaders = [
     { label: "#",           key: (_, i) => i + 1 },
     { label: "Staff",       key: "staffName" },
@@ -429,7 +663,7 @@ export async function exportLeaderboardReport({ leaderboard, month, fmt = "pdf" 
     { label: "Target",      key: (r) => fmtKES(r.targetAmount) },
     { label: "Achieved",    key: (r) => fmtKES(r.achievedAmount) },
     { label: "% Hit",       key: (r) => `${r.pct}%` },
-    { label: "Gap",         key: (r) => r.gap > 0 ? fmtKES(r.gap) : "✅ DONE" },
+    { label: "Gap",         key: (r) => r.gap > 0 ? fmtKES(r.gap) : "HIT" },
     { label: "Distributor", key: (r) => fmtKES(r.byCategory?.distributor) },
     { label: "Stockist",    key: (r) => fmtKES(r.byCategory?.stockist) },
     { label: "Agrovet",     key: (r) => fmtKES(r.byCategory?.agrovet) },
@@ -470,14 +704,10 @@ export async function exportAttendanceReport(data, dateRange, fmt) {
     { label: "Location",  key: (r) => r.location || r.clock_in_location || "—" },
     { label: "Notes",     key: (r) => r.notes || "—" },
   ];
-
   if (fmt === "csv") return exportCSV(data, headers, `attendance-${dateRange}.csv`);
   if (fmt === "excel") return exportExcel([{ name: "Attendance", headers, data }], `attendance-${dateRange}.xlsx`);
-
   const totalHours = data.reduce((s, r) => s + Number(r.total_hours || 0), 0);
   const avgHours   = data.length ? totalHours / data.length : 0;
-
-  // PDF headers — slightly condensed
   const pdfHeaders = [
     { label: "Date",      key: "date" },
     { label: "Staff",     key: (r) => r.expand?.user?.name ?? "—" },
@@ -489,7 +719,6 @@ export async function exportAttendanceReport(data, dateRange, fmt) {
     { label: "GPS Lng",   key: (r) => r.clock_in_lng || r.gps_lng || "—" },
     { label: "Location",  key: (r) => r.location || r.clock_in_location || "—" },
   ];
-
   return exportPDF({
     title: "Attendance & Hours Report",
     subtitle: dateRange,
@@ -508,7 +737,6 @@ export async function exportAttendanceReport(data, dateRange, fmt) {
 
 // ─── EXPENSES REPORT ──────────────────────────────────────────────────────────
 export async function exportExpensesReport(data, dateRange, fmt) {
-  // CSV / Excel — raw numbers
   const headers = [
     { label: "Date",           key: (r) => fmtDate(r.expense_date || r.created) },
     { label: "Staff",          key: (r) => r.expand?.submitted_by?.name ?? "—" },
@@ -520,7 +748,6 @@ export async function exportExpensesReport(data, dateRange, fmt) {
     { label: "Approved By",    key: (r) => r.expand?.approved_by?.name ?? "—" },
     { label: "Rejection Note", key: (r) => r.rejection_reason || "—" },
   ];
-  // PDF — formatted
   const pdfHeaders = [
     { label: "Date",           key: (r) => fmtDate(r.expense_date || r.created) },
     { label: "Staff",          key: (r) => r.expand?.submitted_by?.name ?? "—" },
@@ -532,20 +759,16 @@ export async function exportExpensesReport(data, dateRange, fmt) {
     { label: "Approved By",    key: (r) => r.expand?.approved_by?.name ?? "—" },
     { label: "Rejection Note", key: (r) => r.rejection_reason || "—" },
   ];
-
   if (fmt === "csv") return exportCSV(data, headers, `expenses-${dateRange}.csv`);
   if (fmt === "excel") return exportExcel([{ name: "Expenses", headers, data }], `expenses-${dateRange}.xlsx`);
-
   const approved  = data.filter((e) => e.status === "approved");
   const rejected  = data.filter((e) => e.status === "rejected");
   const pending   = data.filter((e) => e.status === "pending");
   const paid      = data.filter((e) => e.status === "paid");
-
   const approvedAmt = approved.reduce((s, e) => s + Number(e.amount || 0), 0);
   const rejectedAmt = rejected.reduce((s, e) => s + Number(e.amount || 0), 0);
   const paidAmt     = paid.reduce((s, e) => s + Number(e.amount || 0), 0);
   const totalAmt    = data.reduce((s, e) => s + Number(e.amount || 0), 0);
-
   return exportPDF({
     title: "Expenses & Mileage Report",
     subtitle: dateRange,

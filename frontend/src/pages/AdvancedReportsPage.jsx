@@ -6,13 +6,14 @@ import { useLeaderboard } from "../hooks/useTargets";
 import { currentMonth, formatKES } from "../hooks/useOrders";
 import {
   exportSalesReport, exportOrdersReport, exportFarmerVisitsReport,
-  exportLeaderboardReport,
+  exportLeaderboardReport, exportAttendanceReport, exportExpensesReport,
   fmtKES, shareViaWhatsApp, buildLeaderboardShareText,
 } from "../lib/reportExport";
 import { Btn } from "../components/ui/Btn";
 import {
   TrendingUp, Trophy, Leaf, Users, BarChart2,
   Download, Share2, Calendar, ShoppingCart, Clock, Package,
+  CreditCard,
 } from "lucide-react";
 import {
   format, startOfMonth, endOfMonth, startOfQuarter,
@@ -21,23 +22,23 @@ import {
 import toast from "react-hot-toast";
 
 const REPORT_TYPES = [
-  { id: "sales",        label: "Sales Performance",   icon: TrendingUp,  description: "Staff vs target achievement, category breakdown", color: "text-[#c8f230]", bg: "bg-[#c8f230]/10 border-[#c8f230]/20" },
-  { id: "leaderboard", label: "Leaderboard Snapshot", icon: Trophy,      description: "Rankings at a point in time with gap analysis",  color: "text-[#ffab00]", bg: "bg-[#ffab00]/10 border-[#ffab00]/20" },
-  { id: "orders",       label: "Orders Report",        icon: ShoppingCart,description: "All orders, statuses, approval turnaround",      color: "text-[#3b82f6]",  bg: "bg-[#3b82f6]/10 border-[#3b82f6]/20"   },
-  { id: "farmer_visits",label: "Farmer Visits",        icon: Leaf,        description: "Farm coverage, crops, acreage, outcomes",        color: "text-[#00c096]", bg: "bg-[#00c096]/10 border-[#00c096]/20" },
-  { id: "attendance",   label: "Attendance & Hours",   icon: Clock,       description: "Clock-in times, field hours, punctuality",       color: "text-[#8b95a1]", bg: "bg-[#21272f] border-[#2a3040]"       },
-  { id: "expenses",     label: "Expenses & Mileage",   icon: Package,     description: "Claims, approval rates, mileage analysis",       color: "text-[#ff4d4f]", bg: "bg-[#ff4d4f]/10 border-[#ff4d4f]/20" },
+  { id: "sales",         label: "Sales Performance",      icon: TrendingUp,  description: "Staff vs target achievement, category breakdown",       color: "text-[#c8f230]", bg: "bg-[#c8f230]/10 border-[#c8f230]/20" },
+  { id: "leaderboard",   label: "Leaderboard Snapshot",   icon: Trophy,      description: "Rankings at a point in time with gap analysis",          color: "text-[#ffab00]", bg: "bg-[#ffab00]/10 border-[#ffab00]/20" },
+  { id: "orders",        label: "Orders & Aging Report",  icon: CreditCard,  description: "Orders with payments, balances & aging buckets (0-30, 31-60, 61-90, 90+ days)", color: "text-[#3b82f6]", bg: "bg-[#3b82f6]/10 border-[#3b82f6]/20" },
+  { id: "farmer_visits", label: "Farmer Visits",          icon: Leaf,        description: "Farm coverage, crops, acreage, outcomes",                color: "text-[#00c096]", bg: "bg-[#00c096]/10 border-[#00c096]/20" },
+  { id: "attendance",    label: "Attendance & Hours",     icon: Clock,       description: "Clock-in times, field hours, punctuality",               color: "text-[#8b95a1]", bg: "bg-[#21272f] border-[#2a3040]"       },
+  { id: "expenses",      label: "Expenses & Mileage",     icon: Package,     description: "Claims, approval rates, mileage analysis",               color: "text-[#ff4d4f]", bg: "bg-[#ff4d4f]/10 border-[#ff4d4f]/20" },
 ];
 
 function getDateRange(preset, customStart, customEnd) {
   const now = new Date();
   switch (preset) {
-    case "mtd":        return { start: startOfMonth(now),   end: now,              label: "Month to Date"    };
+    case "mtd":        return { start: startOfMonth(now),   end: now,                label: "Month to Date"    };
     case "last_month": { const lm = subMonths(now, 1); return { start: startOfMonth(lm), end: endOfMonth(lm), label: "Last Month" }; }
-    case "qtd":        return { start: startOfQuarter(now), end: now,              label: "Quarter to Date"  };
-    case "ytd":        return { start: startOfYear(now),    end: now,              label: "Year to Date"     };
+    case "qtd":        return { start: startOfQuarter(now), end: now,                label: "Quarter to Date"  };
+    case "ytd":        return { start: startOfYear(now),    end: now,                label: "Year to Date"     };
     case "custom":     return { start: new Date(customStart), end: new Date(customEnd), label: `${customStart} to ${customEnd}` };
-    default:           return { start: startOfMonth(now),   end: now,              label: "Month to Date"    };
+    default:           return { start: startOfMonth(now),   end: now,                label: "Month to Date"    };
   }
 }
 
@@ -55,12 +56,12 @@ function MiniStat({ label, value, icon: Icon, color = "text-[#c8f230]" }) {
 
 export default function AdvancedReportsPage() {
   const [selectedReport, setSelectedReport] = useState(null);
-  const [datePreset, setDatePreset] = useState("mtd");
-  const [customStart, setCustomStart] = useState(format(startOfMonth(new Date()), "yyyy-MM-dd"));
-  const [customEnd, setCustomEnd] = useState(format(new Date(), "yyyy-MM-dd"));
-  const [exportFormat, setExportFormat] = useState("pdf");
-  const [loading, setLoading] = useState(false);
-  const [filterStaff, setFilterStaff] = useState("");
+  const [datePreset, setDatePreset]         = useState("mtd");
+  const [customStart, setCustomStart]       = useState(format(startOfMonth(new Date()), "yyyy-MM-dd"));
+  const [customEnd, setCustomEnd]           = useState(format(new Date(), "yyyy-MM-dd"));
+  const [exportFormat, setExportFormat]     = useState("pdf");
+  const [loading, setLoading]               = useState(false);
+  const [filterStaff, setFilterStaff]       = useState("");
 
   const { start, end, label: dateLabel } = getDateRange(datePreset, customStart, customEnd);
   const monthStr = format(start, "yyyy-MM");
@@ -71,28 +72,18 @@ export default function AdvancedReportsPage() {
     queryFn: () => pb.collection("ft_users").getFullList({ filter: `role = "field_staff"`, sort: "name" }),
   });
 
-  // Build filter string — each collection uses its own date field
   const ordersFilter = () => {
     const parts = [`submitted_at >= "${fmt(start)}"`, `submitted_at <= "${fmt(end)}"`];
     if (filterStaff) parts.push(`staff = "${filterStaff}"`);
     return parts.join(" && ");
   };
 
-  const visitsFilter = () => {
-    const parts = [];
-    if (filterStaff) parts.push(`staff = "${filterStaff}"`);
-    return parts.join(" && ") || "";
-  };
-
+  const visitsFilter  = () => filterStaff ? `staff = "${filterStaff}"` : "";
   const attendanceFilter = () => {
-    const parts = [
-      `date >= "${format(start, "yyyy-MM-dd")}"`,
-      `date <= "${format(end, "yyyy-MM-dd")}"`,
-    ];
+    const parts = [`date >= "${format(start, "yyyy-MM-dd")}"`, `date <= "${format(end, "yyyy-MM-dd")}"`];
     if (filterStaff) parts.push(`user = "${filterStaff}"`);
     return parts.join(" && ");
   };
-
   const expensesFilter = () => {
     const parts = [`created >= "${fmt(start)}"`, `created <= "${fmt(end)}"`];
     if (filterStaff) parts.push(`submitted_by = "${filterStaff}"`);
@@ -102,19 +93,39 @@ export default function AdvancedReportsPage() {
   const { data: ordersData } = useQuery({
     queryKey: ["report-orders", fmt(start), fmt(end), filterStaff],
     queryFn: () => pb.collection("ft_orders").getFullList({
-      filter: ordersFilter(),
-      expand: "staff,approved_by",
-      sort: "-submitted_at",
+      filter: ordersFilter(), expand: "staff,approved_by", sort: "-submitted_at",
     }),
     enabled: selectedReport === "orders",
+  });
+
+  // Fetch ALL payments for the orders in range (for aging report)
+  const { data: paymentsData } = useQuery({
+    queryKey: ["report-order-payments", fmt(start), fmt(end), filterStaff],
+    queryFn: async () => {
+      if (!ordersData?.length) return [];
+      const orderIds = ordersData.map((o) => o.id);
+      // Fetch in batches of 50 to avoid URL length limits
+      const batches = [];
+      for (let i = 0; i < orderIds.length; i += 50) {
+        batches.push(orderIds.slice(i, i + 50));
+      }
+      const results = await Promise.all(
+        batches.map((batch) =>
+          pb.collection("ft_order_payments").getFullList({
+            filter: batch.map((id) => `order = "${id}"`).join(" || "),
+            sort: "-payment_date",
+          })
+        )
+      );
+      return results.flat();
+    },
+    enabled: selectedReport === "orders" && !!ordersData?.length,
   });
 
   const { data: visitsData } = useQuery({
     queryKey: ["report-visits", fmt(start), fmt(end), filterStaff],
     queryFn: () => pb.collection("ft_farmer_visits").getFullList({
-      filter: visitsFilter(),
-      expand: "staff",
-      sort: "-id",
+      filter: visitsFilter(), expand: "staff", sort: "-id",
     }),
     enabled: selectedReport === "farmer_visits",
   });
@@ -122,9 +133,7 @@ export default function AdvancedReportsPage() {
   const { data: attendanceData } = useQuery({
     queryKey: ["report-attendance", fmt(start), fmt(end), filterStaff],
     queryFn: () => pb.collection("ft_attendance").getFullList({
-      filter: attendanceFilter(),
-      expand: "user",
-      sort: "-date",
+      filter: attendanceFilter(), expand: "user", sort: "-date",
     }),
     enabled: selectedReport === "attendance",
   });
@@ -132,9 +141,7 @@ export default function AdvancedReportsPage() {
   const { data: expensesData } = useQuery({
     queryKey: ["report-expenses", fmt(start), fmt(end), filterStaff],
     queryFn: () => pb.collection("ft_expenses").getFullList({
-      filter: expensesFilter(),
-      expand: "submitted_by,approved_by",
-      sort: "-created",
+      filter: expensesFilter(), expand: "submitted_by,approved_by", sort: "-created",
     }),
     enabled: selectedReport === "expenses",
   });
@@ -144,16 +151,31 @@ export default function AdvancedReportsPage() {
     try {
       const dateRange = `${format(start, "dd MMM yyyy")} – ${format(end, "dd MMM yyyy")}`;
 
-      // For reports that need live data, fetch directly at export time
-      let freshOrders = ordersData;
-      let freshVisits = visitsData;
+      let freshOrders     = ordersData;
+      let freshPayments   = paymentsData ?? [];
+      let freshVisits     = visitsData;
       let freshAttendance = attendanceData;
-      let freshExpenses = expensesData;
+      let freshExpenses   = expensesData;
 
-      if (selectedReport === "orders" && !freshOrders) {
-        freshOrders = await pb.collection("ft_orders").getFullList({
-          filter: ordersFilter(), expand: "staff,approved_by", sort: "-submitted_at",
-        });
+      if (selectedReport === "orders") {
+        if (!freshOrders) {
+          freshOrders = await pb.collection("ft_orders").getFullList({
+            filter: ordersFilter(), expand: "staff,approved_by", sort: "-submitted_at",
+          });
+        }
+        if (!freshPayments.length && freshOrders.length) {
+          const orderIds = freshOrders.map((o) => o.id);
+          const batches = [];
+          for (let i = 0; i < orderIds.length; i += 50) batches.push(orderIds.slice(i, i + 50));
+          const results = await Promise.all(
+            batches.map((batch) =>
+              pb.collection("ft_order_payments").getFullList({
+                filter: batch.map((id) => `order = "${id}"`).join(" || "),
+              })
+            )
+          );
+          freshPayments = results.flat();
+        }
       }
       if (selectedReport === "farmer_visits" && !freshVisits) {
         freshVisits = await pb.collection("ft_farmer_visits").getFullList({
@@ -179,7 +201,12 @@ export default function AdvancedReportsPage() {
           await exportLeaderboardReport({ leaderboard, month: monthStr, fmt: exportFormat });
           break;
         case "orders":
-          await exportOrdersReport({ orders: freshOrders ?? [], dateRange, fmt: exportFormat });
+          await exportOrdersReport({
+            orders: freshOrders ?? [],
+            payments: freshPayments,
+            dateRange,
+            fmt: exportFormat,
+          });
           break;
         case "farmer_visits":
           await exportFarmerVisitsReport({ visits: freshVisits ?? [], dateRange, fmt: exportFormat });
@@ -201,19 +228,29 @@ export default function AdvancedReportsPage() {
     }
   };
 
-  const orderStats = ordersData ? {
-    total: ordersData.length,
-    approved: ordersData.filter(o => o.status === "approved").length,
-    pending: ordersData.filter(o => o.status === "pending_approval").length,
-    rejected: ordersData.filter(o => o.status === "rejected").length,
-    totalValue: ordersData.reduce((s, o) => s + Number(o.order_amount || 0), 0),
-    approvedValue: ordersData.filter(o => o.status === "approved").reduce((s, o) => s + Number(o.order_amount || 0), 0),
-  } : null;
+  // ── Order aging preview stats ──
+  const orderAgingStats = React.useMemo(() => {
+    if (!ordersData) return null;
+    const payMap = {};
+    for (const p of (paymentsData ?? [])) {
+      if (!payMap[p.order]) payMap[p.order] = { paid: 0, pending: 0 };
+      if (p.status === "approved") payMap[p.order].paid    += Number(p.amount || 0);
+      if (p.status === "pending")  payMap[p.order].pending += Number(p.amount || 0);
+    }
+    const approved = ordersData.filter((o) => o.status === "approved");
+    const totalValue    = ordersData.reduce((s, o) => s + Number(o.order_amount || 0), 0);
+    const totalPaid     = approved.reduce((s, o) => s + (payMap[o.id]?.paid ?? 0), 0);
+    const totalPending  = approved.reduce((s, o) => s + (payMap[o.id]?.pending ?? 0), 0);
+    const totalBalance  = approved.reduce((s, o) => s + Math.max(0, Number(o.order_amount || 0) - (payMap[o.id]?.paid ?? 0)), 0);
+    const fullyPaid     = approved.filter((o) => (payMap[o.id]?.paid ?? 0) >= Number(o.order_amount || 0) - 0.01).length;
+    const collRate      = totalValue > 0 ? Math.round((totalPaid / totalValue) * 100) : 0;
+    return { total: ordersData.length, totalValue, totalPaid, totalPending, totalBalance, fullyPaid, collRate };
+  }, [ordersData, paymentsData]);
 
   const visitStats = visitsData ? {
     total: visitsData.length,
-    converted: visitsData.filter(v => v.visit_outcome === "purchased").length,
-    counties: [...new Set(visitsData.map(v => v.county).filter(Boolean))].length,
+    converted: visitsData.filter((v) => v.visit_outcome === "purchased").length,
+    counties: [...new Set(visitsData.map((v) => v.county).filter(Boolean))].length,
     acres: visitsData.reduce((s, v) => s + Number(v.acreage || 0), 0),
   } : null;
 
@@ -225,9 +262,9 @@ export default function AdvancedReportsPage() {
 
   const expStats = expensesData ? {
     total: expensesData.length,
-    approved: expensesData.filter(e => e.status === "approved").length,
+    approved: expensesData.filter((e) => e.status === "approved").length,
     totalAmount: expensesData.reduce((s, e) => s + Number(e.amount || 0), 0),
-    approvedAmount: expensesData.filter(e => e.status === "approved").reduce((s, e) => s + Number(e.amount || 0), 0),
+    approvedAmount: expensesData.filter((e) => e.status === "approved").reduce((s, e) => s + Number(e.amount || 0), 0),
   } : null;
 
   return (
@@ -265,7 +302,7 @@ export default function AdvancedReportsPage() {
 
           <div className="flex items-center justify-between">
             <h2 className="font-display font-bold text-lg text-white">
-              {REPORT_TYPES.find(r => r.id === selectedReport)?.label}
+              {REPORT_TYPES.find((r) => r.id === selectedReport)?.label}
             </h2>
             <button onClick={() => shareViaWhatsApp(buildLeaderboardShareText(leaderboard, monthStr))}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#25D366]/15 border border-[#25D366]/30 text-[#25D366] text-xs font-medium">
@@ -280,12 +317,12 @@ export default function AdvancedReportsPage() {
 
             <div className="flex flex-wrap gap-2">
               {[
-                { value: "mtd", label: "Month to Date" },
-                { value: "last_month", label: "Last Month" },
-                { value: "qtd", label: "Quarter to Date" },
-                { value: "ytd", label: "Year to Date" },
-                { value: "custom", label: "Custom Range" },
-              ].map(p => (
+                { value: "mtd",        label: "Month to Date"  },
+                { value: "last_month", label: "Last Month"     },
+                { value: "qtd",        label: "Quarter to Date"},
+                { value: "ytd",        label: "Year to Date"   },
+                { value: "custom",     label: "Custom Range"   },
+              ].map((p) => (
                 <button key={p.value} onClick={() => setDatePreset(p.value)}
                   className={`px-3 py-2 rounded-xl text-xs font-medium transition-all ${
                     datePreset === p.value ? "bg-[#c8f230] text-[#0a0d0f]" : "bg-[#0a0d0f] border border-[#21272f] text-[#8b95a1] hover:text-white"
@@ -299,12 +336,12 @@ export default function AdvancedReportsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-[#8b95a1] block mb-1">From</label>
-                  <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)}
+                  <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)}
                     className="w-full bg-[#0a0d0f] border border-[#21272f] rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-[#c8f230] [color-scheme:dark]" />
                 </div>
                 <div>
                   <label className="text-xs text-[#8b95a1] block mb-1">To</label>
-                  <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)}
+                  <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)}
                     className="w-full bg-[#0a0d0f] border border-[#21272f] rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-[#c8f230] [color-scheme:dark]" />
                 </div>
               </div>
@@ -313,18 +350,18 @@ export default function AdvancedReportsPage() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-[#8b95a1] block mb-1">Filter by Staff</label>
-                <select value={filterStaff} onChange={e => setFilterStaff(e.target.value)}
+                <select value={filterStaff} onChange={(e) => setFilterStaff(e.target.value)}
                   className="w-full bg-[#0a0d0f] border border-[#21272f] rounded-xl px-3 py-2.5 text-sm text-[#c2cad4] outline-none focus:border-[#c8f230]">
                   <option value="">All Staff</option>
-                  {(staff ?? []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  {(staff ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs text-[#8b95a1] block mb-1">Export Format</label>
-                <select value={exportFormat} onChange={e => setExportFormat(e.target.value)}
+                <select value={exportFormat} onChange={(e) => setExportFormat(e.target.value)}
                   className="w-full bg-[#0a0d0f] border border-[#21272f] rounded-xl px-3 py-2.5 text-sm text-[#c2cad4] outline-none focus:border-[#c8f230]">
                   <option value="pdf">PDF (Print-ready)</option>
-                  <option value="excel">Excel (.xlsx)</option>
+                  <option value="excel">Excel (.xlsx) — 2 sheets</option>
                   <option value="csv">CSV (Data)</option>
                 </select>
               </div>
@@ -341,17 +378,54 @@ export default function AdvancedReportsPage() {
             {loading ? "Generating Report…" : `Export as ${exportFormat.toUpperCase()}`}
           </Btn>
 
-          {/* Previews */}
-          {selectedReport === "orders" && orderStats && (
+          {/* ── ORDERS AGING PREVIEW ── */}
+          {selectedReport === "orders" && orderAgingStats && (
             <div className="space-y-3">
               <h3 className="text-sm font-medium text-white">Preview — {dateLabel}</h3>
               <div className="grid grid-cols-3 gap-3">
-                <MiniStat label="Total Orders"   value={orderStats.total}                  icon={ShoppingCart} />
-                <MiniStat label="Total Value"    value={fmtKES(orderStats.totalValue)}     icon={TrendingUp}   color="text-[#c8f230]" />
-                <MiniStat label="Approved"       value={orderStats.approved}               icon={ShoppingCart} color="text-[#00c096]" />
-                <MiniStat label="Pending"        value={orderStats.pending}                icon={Clock}        color="text-[#ffab00]" />
-                <MiniStat label="Rejected"       value={orderStats.rejected}               icon={ShoppingCart} color="text-[#ff4d4f]" />
-                <MiniStat label="Approved Value" value={fmtKES(orderStats.approvedValue)}  icon={TrendingUp}   color="text-[#00c096]" />
+                <MiniStat label="Total Orders"      value={orderAgingStats.total}                        icon={ShoppingCart} />
+                <MiniStat label="Total Order Value" value={fmtKES(orderAgingStats.totalValue)}            icon={TrendingUp}   color="text-[#c8f230]" />
+                <MiniStat label="Total Collected"   value={fmtKES(orderAgingStats.totalPaid)}             icon={CreditCard}   color="text-[#00c096]" />
+                <MiniStat label="Pending Payments"  value={fmtKES(orderAgingStats.totalPending)}          icon={Clock}        color="text-[#ff9f43]" />
+                <MiniStat label="Outstanding Bal."  value={fmtKES(orderAgingStats.totalBalance)}          icon={TrendingUp}   color="text-[#ff4d4f]" />
+                <MiniStat label="Collection Rate"   value={`${orderAgingStats.collRate}%`}                icon={TrendingUp}   color="text-[#c8f230]" />
+              </div>
+
+              {/* Aging buckets */}
+              <div className="bg-[#111418] border border-[#21272f] rounded-2xl p-4">
+                <p className="text-xs font-semibold text-white mb-3">Outstanding Balance by Age</p>
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    { label: "0–30 days",  color: "text-[#00c096]", border: "border-[#00c096]/30", bg: "bg-[#00c096]/10" },
+                    { label: "31–60 days", color: "text-[#c8f230]", border: "border-[#c8f230]/30", bg: "bg-[#c8f230]/10" },
+                    { label: "61–90 days", color: "text-[#ff9f43]", border: "border-[#ff9f43]/30", bg: "bg-[#ff9f43]/10" },
+                    { label: "90+ days",   color: "text-[#ff4d4f]", border: "border-[#ff4d4f]/30", bg: "bg-[#ff4d4f]/10" },
+                  ].map(({ label, color, border, bg }) => {
+                    // Calculate bucket value
+                    const bucketVal = (ordersData ?? [])
+                      .filter((o) => o.status === "approved")
+                      .reduce((s, o) => {
+                        const pm = (paymentsData ?? []).filter((p) => p.order === o.id && p.status === "approved");
+                        const paid = pm.reduce((a, p) => a + Number(p.amount || 0), 0);
+                        const bal = Math.max(0, Number(o.order_amount || 0) - paid);
+                        if (bal <= 0) return s;
+                        const days = Math.floor((new Date() - new Date(o.submitted_at || o.order_date || o.created)) / 86400000);
+                        const bucket =
+                          days <= 30 ? "0–30 days" :
+                          days <= 60 ? "31–60 days" :
+                          days <= 90 ? "61–90 days" : "90+ days";
+                        return bucket === label ? s + bal : s;
+                      }, 0);
+                    return (
+                      <div key={label} className={`rounded-xl p-3 border ${bg} ${border} text-center`}>
+                        <p className={`text-xs font-bold ${color}`}>{label}</p>
+                        <p className={`text-sm font-bold font-mono mt-1 ${color}`}>
+                          {fmtKES(bucketVal)}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
@@ -374,7 +448,7 @@ export default function AdvancedReportsPage() {
               <div className="grid grid-cols-3 gap-3">
                 <MiniStat label="Staff Ranked"   value={leaderboard.length}                                             icon={Users} />
                 <MiniStat label="Total Achieved" value={fmtKES(leaderboard.reduce((s, r) => s + r.achievedAmount, 0))} icon={TrendingUp} color="text-[#c8f230]" />
-                <MiniStat label="Hitting Target" value={leaderboard.filter(r => r.pct >= 100).length}                  icon={Trophy}     color="text-[#00c096]" />
+                <MiniStat label="Hitting Target" value={leaderboard.filter((r) => r.pct >= 100).length}                icon={Trophy}     color="text-[#00c096]" />
               </div>
               <div className="bg-[#111418] border border-[#21272f] rounded-2xl overflow-hidden">
                 <div className="px-4 py-3 border-b border-[#21272f]">
@@ -417,55 +491,4 @@ export default function AdvancedReportsPage() {
       )}
     </div>
   );
-}
-
-// ─── ATTENDANCE EXPORT ────────────────────────────────────────────────────────
-async function exportAttendanceReport(data, dateRange, fmt) {
-  const { exportCSV, exportPDF } = await import("../lib/reportExport");
-  const headers = [
-    { label: "Date",      key: "date" },
-    { label: "Staff",     key: r => r.expand?.user?.name ?? r.user },
-    { label: "Clock In",  key: r => r.clock_in  ? format(new Date(r.clock_in),  "HH:mm") : "-" },
-    { label: "Clock Out", key: r => r.clock_out ? format(new Date(r.clock_out), "HH:mm") : "Active" },
-    { label: "Hours",     key: r => r.total_hours ? `${Number(r.total_hours).toFixed(1)}h` : "-" },
-    { label: "Status",    key: "status" },
-  ];
-  if (fmt === "csv") return exportCSV(data, headers, `attendance-${dateRange}.csv`);
-  if (fmt === "excel") {
-    const { exportExcel } = await import("../lib/reportExport");
-    return exportExcel([{ name: "Attendance", headers, data }], `attendance-${dateRange}.xlsx`);
-  }
-  return exportPDF({
-    title: "Attendance & Hours Report", subtitle: dateRange,
-    stats: [
-      { label: "Records",     value: data.length },
-      { label: "Total Hours", value: `${data.reduce((s, r) => s + Number(r.total_hours || 0), 0).toFixed(1)}h` },
-    ],
-    table: { headers, data },
-    filename: `attendance-${dateRange}.pdf`,
-  });
-}
-
-// ─── EXPENSES EXPORT ──────────────────────────────────────────────────────────
-async function exportExpensesReport(data, dateRange, fmt) {
-  const { exportCSV, exportPDF, fmtKES, fmtDate } = await import("../lib/reportExport");
-  const headers = [
-    { label: "Date",        key: r => fmtDate(r.expense_date || r.created) },
-    { label: "Staff",       key: r => r.expand?.submitted_by?.name ?? "-" },
-    { label: "Type",        key: "expense_type" },
-    { label: "Description", key: "description" },
-    { label: "Amount",      key: r => fmtKES(r.amount) },
-    { label: "Status",      key: "status" },
-  ];
-  if (fmt === "csv") return exportCSV(data, headers, `expenses-${dateRange}.csv`);
-  return exportPDF({
-    title: "Expenses & Mileage Report", subtitle: dateRange,
-    stats: [
-      { label: "Total Claims",  value: data.length },
-      { label: "Total Amount",  value: fmtKES(data.reduce((s, e) => s + Number(e.amount || 0), 0)) },
-      { label: "Approved",      value: data.filter(e => e.status === "approved").length },
-    ],
-    table: { headers, data },
-    filename: `expenses-${dateRange}.pdf`,
-  });
 }
