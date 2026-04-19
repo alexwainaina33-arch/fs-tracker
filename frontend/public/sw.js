@@ -1,8 +1,9 @@
 // public/sw.js
 // FieldTrack Service Worker
-// Handles: offline caching, background sync, auto-updates
+// ⚡ CACHE_NAME is injected at build time by vite.config.js — changes on every deploy
+// This guarantees installed PWAs always update after a Vercel push
 
-const CACHE_NAME = "fieldtrack-v3";
+const CACHE_NAME = "fieldtrack-__BUILD_TIMESTAMP__";
 const STATIC_ASSETS = [
   "/",
   "/index.html",
@@ -13,7 +14,7 @@ const STATIC_ASSETS = [
 
 // ── INSTALL: cache static assets ─────────────────────────────────────────────
 self.addEventListener("install", (event) => {
-  console.log("[SW] Installing...");
+  console.log("[SW] Installing cache:", CACHE_NAME);
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(STATIC_ASSETS).catch((err) => {
@@ -21,13 +22,13 @@ self.addEventListener("install", (event) => {
       });
     })
   );
-  // Take control immediately — don't wait for old SW to die
+  // Take control immediately — skip waiting for old SW
   self.skipWaiting();
 });
 
-// ── ACTIVATE: clean old caches ────────────────────────────────────────────────
+// ── ACTIVATE: wipe ALL old caches ────────────────────────────────────────────
 self.addEventListener("activate", (event) => {
-  console.log("[SW] Activating...");
+  console.log("[SW] Activating:", CACHE_NAME);
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
@@ -38,30 +39,44 @@ self.addEventListener("activate", (event) => {
             return caches.delete(key);
           })
       )
-    )
+    ).then(() => {
+      // Take control of ALL open clients immediately
+      return self.clients.claim();
+    }).then(() => {
+      // Tell every open tab: "reload now, you have the new version"
+      return self.clients.matchAll({ type: "window" }).then((clients) => {
+        clients.forEach((client) =>
+          client.postMessage({ type: "SW_UPDATED", cache: CACHE_NAME })
+        );
+      });
+    })
   );
-  // Take control of all open clients immediately
-  self.clients.claim();
 });
 
 // ── FETCH: network-first for API, cache-first for assets ──────────────────────
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // Never cache PocketBase API calls
-  if (url.hostname.includes("fly.dev") || url.pathname.startsWith("/api/")) {
-    event.respondWith(fetch(event.request).catch(() => {
-      return new Response(JSON.stringify({ error: "offline" }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }));
+  // Never cache PocketBase API or realtime SSE
+  if (
+    url.hostname.includes("fly.dev") ||
+    url.pathname.startsWith("/api/") ||
+    url.pathname.includes("realtime")   // never cache SSE stream
+  ) {
+    event.respondWith(
+      fetch(event.request).catch(() => {
+        return new Response(JSON.stringify({ error: "offline" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
     return;
   }
 
-  // Never cache hot-reload or dev server
+  // Never cache Vite dev server requests
   if (url.pathname.includes("@vite") || url.pathname.includes("__vite")) return;
 
-  // For navigation requests (HTML) — network first, fallback to cached index
+  // Navigation (HTML) — network first, fallback to cached /index.html
   if (event.request.mode === "navigate") {
     event.respondWith(
       fetch(event.request)
@@ -75,7 +90,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // For JS/CSS/fonts — stale-while-revalidate
+  // JS / CSS / fonts — stale-while-revalidate
   event.respondWith(
     caches.match(event.request).then((cached) => {
       const network = fetch(event.request).then((res) => {
@@ -90,22 +105,14 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
-// ── UPDATE DETECTION: notify clients of new version ───────────────────────────
+// ── MESSAGES FROM APP ─────────────────────────────────────────────────────────
 self.addEventListener("message", (event) => {
   if (event.data === "SKIP_WAITING") {
     self.skipWaiting();
   }
-  if (event.data === "CHECK_UPDATE") {
-    // Tell all clients there's an update ready
-    self.clients.matchAll().then((clients) => {
-      clients.forEach((client) =>
-        client.postMessage({ type: "UPDATE_AVAILABLE" })
-      );
-    });
-  }
 });
 
-// ── PUSH NOTIFICATIONS (future use) ──────────────────────────────────────────
+// ── PUSH NOTIFICATIONS ────────────────────────────────────────────────────────
 self.addEventListener("push", (event) => {
   if (!event.data) return;
   const data = event.data.json();
@@ -116,9 +123,7 @@ self.addEventListener("push", (event) => {
       badge:   "/icons/icon-72x72.png",
       tag:     data.tag ?? "fieldtrack",
       data:    data.url ? { url: data.url } : {},
-      actions: data.url
-        ? [{ action: "open", title: "Open App" }]
-        : [],
+      actions: data.url ? [{ action: "open", title: "Open App" }] : [],
     })
   );
 });

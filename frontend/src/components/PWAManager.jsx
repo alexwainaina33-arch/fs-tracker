@@ -1,10 +1,9 @@
 // src/components/PWAManager.jsx
-// Handles: install prompt, update detection, offline/online banner
-// Drop this into Layout.jsx once — it manages everything automatically
+// Handles: install prompt, auto-update on deploy, offline/online banner
 
 import { useState, useEffect, useCallback } from "react";
 import toast from "react-hot-toast";
-import { Download, RefreshCw, WifiOff, Wifi } from "lucide-react";
+import { Download, RefreshCw } from "lucide-react";
 
 // ─── REGISTER SERVICE WORKER ──────────────────────────────────────────────────
 export function useServiceWorker() {
@@ -14,20 +13,24 @@ export function useServiceWorker() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
 
-    navigator.serviceWorker.register("/sw.js", { scope: "/" })
+    navigator.serviceWorker
+      .register("/sw.js", { scope: "/" })
       .then((reg) => {
         setSwReg(reg);
         console.log("[PWA] Service worker registered");
 
-        // Check for updates every 60 seconds
-        const interval = setInterval(() => reg.update(), 60 * 1000);
+        // ── Check for new SW version every 30 seconds ──────────────────────
+        const interval = setInterval(() => reg.update(), 30 * 1000);
 
-        // New service worker waiting — update is ready
+        // ── New SW found during this session ───────────────────────────────
         reg.addEventListener("updatefound", () => {
           const newSW = reg.installing;
           if (!newSW) return;
+
           newSW.addEventListener("statechange", () => {
+            // "installed" + controller exists = update ready for this open tab
             if (newSW.state === "installed" && navigator.serviceWorker.controller) {
+              console.log("[PWA] Update ready — prompting user");
               setUpdateReady(true);
             }
           });
@@ -37,16 +40,31 @@ export function useServiceWorker() {
       })
       .catch((err) => console.warn("[PWA] SW registration failed:", err));
 
-    // Listen for messages from SW
+    // ── Message from SW: new version just activated ─────────────────────────
+    // sw.js sends SW_UPDATED after claiming all clients on activate
     navigator.serviceWorker.addEventListener("message", (event) => {
-      if (event.data?.type === "UPDATE_AVAILABLE") setUpdateReady(true);
+      if (event.data?.type === "SW_UPDATED") {
+        console.log("[PWA] SW_UPDATED received — reloading");
+        // Small delay so the SW finishes activating cleanly
+        setTimeout(() => window.location.reload(), 300);
+      }
+    });
+
+    // ── If the controlling SW changed (new one took over) — reload ──────────
+    // This handles the case where another tab already clicked "Update Now"
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!refreshing) {
+        refreshing = true;
+        window.location.reload();
+      }
     });
   }, []);
 
   const applyUpdate = useCallback(() => {
     if (!swReg?.waiting) return;
     swReg.waiting.postMessage("SKIP_WAITING");
-    window.location.reload();
+    // controllerchange listener above will reload
   }, [swReg]);
 
   return { updateReady, applyUpdate };
@@ -58,27 +76,17 @@ export function useInstallPrompt() {
   const [installed, setInstalled] = useState(false);
 
   useEffect(() => {
-    // Check if already installed as PWA
-    if (window.matchMedia("(display-mode: standalone)").matches) {
-      setInstalled(true);
-      return;
-    }
-    if (window.navigator.standalone === true) { // iOS
-      setInstalled(true);
-      return;
-    }
-    // Check localStorage so we never re-prompt on same device
-    if (localStorage.getItem("pwa-installed") === "true") {
+    if (
+      window.matchMedia("(display-mode: standalone)").matches ||
+      window.navigator.standalone === true ||
+      localStorage.getItem("pwa-installed") === "true"
+    ) {
       setInstalled(true);
       return;
     }
 
-    const handler = (e) => {
-      e.preventDefault();
-      setPrompt(e);
-    };
+    const handler = (e) => { e.preventDefault(); setPrompt(e); };
     window.addEventListener("beforeinstallprompt", handler);
-
     window.addEventListener("appinstalled", () => {
       setInstalled(true);
       setPrompt(null);
@@ -102,7 +110,7 @@ export function useInstallPrompt() {
   return { canInstall: !!prompt && !installed, installed, install };
 }
 
-// ─── INSTALL BANNER (shown at bottom of screen) ───────────────────────────────
+// ─── INSTALL BANNER ───────────────────────────────────────────────────────────
 export function InstallBanner() {
   const { canInstall, install } = useInstallPrompt();
   const [dismissed, setDismissed] = useState(false);
@@ -112,20 +120,15 @@ export function InstallBanner() {
   return (
     <div className="fixed bottom-0 left-0 right-0 z-[9999] p-4 pb-safe">
       <div className="bg-[#111418] border border-[#c8f230]/30 rounded-2xl p-4 shadow-2xl flex items-center gap-4 animate-slide-up">
-        {/* Icon */}
         <div className="w-12 h-12 rounded-xl bg-[#c8f230] flex items-center justify-center flex-shrink-0">
           <span className="text-2xl">📍</span>
         </div>
-
-        {/* Text */}
         <div className="flex-1 min-w-0">
           <p className="font-bold text-white text-sm">Install FieldTrack</p>
           <p className="text-xs text-[#8b95a1] mt-0.5">
-            Add to home screen for the best experience — works offline too!
+            Add to home screen — works offline too!
           </p>
         </div>
-
-        {/* Actions */}
         <div className="flex flex-col gap-1.5 flex-shrink-0">
           <button
             onClick={install}
@@ -145,10 +148,9 @@ export function InstallBanner() {
   );
 }
 
-// ─── UPDATE BANNER ────────────────────────────────────────────────────────────
+// ─── UPDATE BANNER (shown if auto-reload didn't trigger) ──────────────────────
 export function UpdateBanner() {
   const { updateReady, applyUpdate } = useServiceWorker();
-
   if (!updateReady) return null;
 
   return (
@@ -167,7 +169,7 @@ export function UpdateBanner() {
   );
 }
 
-// ─── iOS INSTALL INSTRUCTIONS (iOS doesn't support beforeinstallprompt) ───────
+// ─── iOS INSTALL INSTRUCTIONS ─────────────────────────────────────────────────
 export function IOSInstallHint() {
   const [show, setShow] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -177,7 +179,7 @@ export function IOSInstallHint() {
     const isStandalone = window.navigator.standalone === true;
     const wasDismissed = localStorage.getItem("ios-hint-dismissed") === "true";
     if (isIOS && !isStandalone && !wasDismissed) {
-      setTimeout(() => setShow(true), 3000); // show after 3s
+      setTimeout(() => setShow(true), 3000);
     }
   }, []);
 
@@ -198,25 +200,23 @@ export function IOSInstallHint() {
           <button onClick={dismiss} className="text-[#4a5568] hover:text-white text-lg leading-none">×</button>
         </div>
         <div className="space-y-2 text-xs text-[#8b95a1]">
-          <div className="flex items-center gap-2">
-            <span className="w-5 h-5 rounded-full bg-[#c8f230] text-[#0a0d0f] flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span>
-            <span>Tap the <strong className="text-white">Share</strong> button <span className="text-[#c8f230]">⬆</span> at the bottom of Safari</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-5 h-5 rounded-full bg-[#c8f230] text-[#0a0d0f] flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span>
-            <span>Scroll down and tap <strong className="text-white">"Add to Home Screen"</strong></span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-5 h-5 rounded-full bg-[#c8f230] text-[#0a0d0f] flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span>
-            <span>Tap <strong className="text-white">"Add"</strong> — FieldTrack will appear on your home screen!</span>
-          </div>
+          {[
+            <>Tap the <strong className="text-white">Share</strong> button <span className="text-[#c8f230]">⬆</span> at the bottom of Safari</>,
+            <>Scroll down and tap <strong className="text-white">"Add to Home Screen"</strong></>,
+            <>Tap <strong className="text-white">"Add"</strong> — FieldTrack will appear on your home screen!</>,
+          ].map((step, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-[#c8f230] text-[#0a0d0f] flex items-center justify-center text-[10px] font-bold flex-shrink-0">{i + 1}</span>
+              <span>{step}</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
 }
 
-// ─── MAIN EXPORT — drop this into Layout.jsx ──────────────────────────────────
+// ─── MAIN EXPORT ──────────────────────────────────────────────────────────────
 export default function PWAManager() {
   return (
     <>
