@@ -4,6 +4,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { pb } from "../lib/pb";
 import { useAuth } from "../store/auth";
+import { useNotifications } from "../store/notifications";
 import { formatKES } from "./useOrders";
 import toast from "react-hot-toast";
 
@@ -136,6 +137,7 @@ export function useSubmitPayment() {
 export function useApprovePayment() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { markReadByReference } = useNotifications();
 
   return useMutation({
     mutationFn: async ({ paymentId }) => {
@@ -146,9 +148,11 @@ export function useApprovePayment() {
         rejection_reason: "",
       });
 
+      // Auto-mark payment_pending notification as read (manager acted on it)
+      markReadByReference(paymentId);
+
       const order = await pb.collection("ft_orders").getOne(payment.order);
 
-      // Check if now fully paid
       const allApproved = await pb.collection("ft_order_payments").getFullList({
         filter: `order = "${payment.order}" && status = "approved"`,
       });
@@ -156,7 +160,6 @@ export function useApprovePayment() {
       const isFullyPaid = totalPaid >= Number(order.order_amount) - 0.01;
 
       try {
-        // Notify the field staff
         await pb.collection("ft_notifications").create({
           recipient: payment.recorded_by,
           type: "payment_approved",
@@ -203,6 +206,7 @@ export function useApprovePayment() {
 export function useRejectPayment() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { markReadByReference } = useNotifications();
 
   return useMutation({
     mutationFn: async ({ paymentId, reason }) => {
@@ -216,6 +220,9 @@ export function useRejectPayment() {
         reviewed_at: new Date().toISOString().replace("T", " "),
         rejection_reason: reason.trim(),
       });
+
+      // Auto-mark payment_pending notification as read (manager acted on it)
+      markReadByReference(paymentId);
 
       const order = await pb.collection("ft_orders").getOne(payment.order);
 

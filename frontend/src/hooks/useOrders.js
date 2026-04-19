@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import { pb } from "../lib/pb";
 import { useAuth } from "../store/auth";
 import { isOnline, enqueueOrder } from "../lib/offlineQueue";
+import { useNotifications } from "../store/notifications";
 import toast from "react-hot-toast";
 import { format } from "date-fns";
 
@@ -118,10 +119,7 @@ export function useCreateOrder() {
       const orderNo = generateOrderNo();
       const now     = new Date().toISOString().replace("T", " ");
 
-      // ── OFFLINE path — queue as plain JSON (no file attachments offline) ──
       if (!isOnline()) {
-        // Note: file attachments cannot be queued offline (no binary storage)
-        // The order data itself is saved and will sync when online
         await enqueueOrder({
           order_no:             orderNo,
           staff:                user.id,
@@ -140,7 +138,6 @@ export function useCreateOrder() {
         return { _offline: true };
       }
 
-      // ── ONLINE path — normal FormData submit ───────────────────────────────
       const fd = new FormData();
       fd.append("order_no",            orderNo);
       fd.append("staff",               user.id);
@@ -202,7 +199,7 @@ async function createOrderNotification(order, submitter) {
       });
     }
   } catch (e) {
-    console.warn("Notification creation failed:", e);
+    console.error("[Notif] FAILED:", e?.status, e?.response?.data ?? e?.message ?? e);
   }
 }
 
@@ -210,6 +207,7 @@ async function createOrderNotification(order, submitter) {
 export function useApproveOrder() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { markReadByReference } = useNotifications();
 
   return useMutation({
     mutationFn: async (orderId) => {
@@ -218,6 +216,9 @@ export function useApproveOrder() {
         approved_by: user.id,
         approved_at: new Date().toISOString().replace("T", " "),
       });
+      // Auto-mark the order_pending notification as read (manager acted on it)
+      markReadByReference(orderId);
+
       await pb.collection("ft_notifications").create({
         recipient:      order.staff,
         type:           "order_approved",
@@ -244,6 +245,7 @@ export function useApproveOrder() {
 export function useRejectOrder() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { markReadByReference } = useNotifications();
 
   return useMutation({
     mutationFn: async ({ orderId, reason }) => {
@@ -255,6 +257,9 @@ export function useRejectOrder() {
         rejected_by:      user.id,
         rejection_reason: reason.trim(),
       });
+      // Auto-mark the order_pending notification as read (manager acted on it)
+      markReadByReference(orderId);
+
       await pb.collection("ft_notifications").create({
         recipient:      order.staff,
         type:           "order_rejected",
@@ -279,6 +284,7 @@ export function useRejectOrder() {
 export function useRequestRevision() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { markReadByReference } = useNotifications();
 
   return useMutation({
     mutationFn: async ({ orderId, note }) => {
@@ -286,6 +292,9 @@ export function useRequestRevision() {
         status:           "revision_requested",
         rejection_reason: note,
       });
+      // Auto-mark the order_pending notification as read (manager acted on it)
+      markReadByReference(orderId);
+
       await pb.collection("ft_notifications").create({
         recipient:      order.staff,
         type:           "order_revision",

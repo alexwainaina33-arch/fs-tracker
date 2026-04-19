@@ -60,13 +60,15 @@ export const useNotifications = create((set, get) => ({
     if (prev) { try { prev(); } catch (_) {} }
 
     try {
+      // ✅ FIX: PocketBase only accepts "*" or a record ID here — not a filter string
+      // The recipient check below ensures we only process our own notifications
       const unsub = await pb.collection("ft_notifications").subscribe(
-        `recipient="${userId}"`,
+        "*",
         (e) => {
+          // Only process notifications meant for this user
           if (e.record.recipient !== userId) return;
 
           if (e.action === "create") {
-            // Add to top of list
             set((state) => ({
               notifications: [e.record, ...state.notifications].slice(0, 50),
               unreadCount: state.unreadCount + 1,
@@ -116,7 +118,6 @@ export const useNotifications = create((set, get) => ({
 
   // ─── MARK SINGLE AS READ ──────────────────────────────────────────────────
   markRead: async (notifId) => {
-    // Optimistic update first
     set((state) => {
       const updated = state.notifications.map((n) =>
         n.id === notifId ? { ...n, is_read: true } : n
@@ -136,7 +137,6 @@ export const useNotifications = create((set, get) => ({
   // ─── MARK ALL READ ────────────────────────────────────────────────────────
   markAllRead: async () => {
     const unread = get().notifications.filter((n) => !n.is_read);
-    // Optimistic update
     set((state) => ({
       notifications: state.notifications.map((n) => ({ ...n, is_read: true })),
       unreadCount: 0,
@@ -149,6 +149,35 @@ export const useNotifications = create((set, get) => ({
       );
     } catch (e) {
       console.warn("Mark all read failed:", e);
+    }
+  },
+
+  // ─── MARK READ BY REFERENCE (called after action is taken) ───────────────
+  // e.g. after approving order X, auto-mark all notifications about order X
+  markReadByReference: async (referenceId) => {
+    if (!referenceId) return;
+    const matching = get().notifications.filter(
+      (n) => !n.is_read && n.reference_id === referenceId
+    );
+    if (matching.length === 0) return;
+    // Optimistic update
+    set((state) => {
+      const updated = state.notifications.map((n) =>
+        n.reference_id === referenceId ? { ...n, is_read: true } : n
+      );
+      return {
+        notifications: updated,
+        unreadCount: updated.filter((n) => !n.is_read).length,
+      };
+    });
+    try {
+      await Promise.all(
+        matching.map((n) =>
+          pb.collection("ft_notifications").update(n.id, { is_read: true })
+        )
+      );
+    } catch (e) {
+      console.warn("markReadByReference failed:", e);
     }
   },
 

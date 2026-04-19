@@ -180,8 +180,12 @@ export function useRealtimeSync() {
     // ── Re-subscribe when tab becomes visible ────────────────────────────
     function onVisibilityChange() {
       if (document.visibilityState === "visible") {
-        console.log("[Realtime] Tab visible — checking subscriptions");
-        reconnect(300);
+        const activeSubs = Object.values(subsRef.current).filter(Boolean).length;
+        const totalSubs = Object.keys(COLLECTION_KEY_MAP).length;
+        if (activeSubs < totalSubs) {
+          console.log("[Realtime] Tab visible — subscriptions lost, reconnecting");
+          reconnect(300);
+        }
       }
     }
 

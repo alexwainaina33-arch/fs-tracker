@@ -1,5 +1,6 @@
 // src/components/NotificationBell.jsx
 import React, { useEffect, useState, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { Bell, CheckCheck, ShoppingCart, ThumbsUp, X, RefreshCcw, Target, CreditCard } from "lucide-react";
 import { formatDistanceToNow, isToday, isYesterday } from "date-fns";
 import { useAuth } from "../store/auth";
@@ -10,12 +11,52 @@ const TYPE_CONFIG = {
   order_approved:   { icon: ThumbsUp,     color: "text-[#00c096]", bg: "bg-[#00c096]/10" },
   order_rejected:   { icon: X,            color: "text-[#ff4d4f]", bg: "bg-[#ff4d4f]/10" },
   order_revision:   { icon: RefreshCcw,   color: "text-[#c8f230]", bg: "bg-[#c8f230]/10" },
+  order_fully_paid: { icon: CreditCard,   color: "text-[#00c096]", bg: "bg-[#00c096]/10" },
   target_set:       { icon: Target,       color: "text-[#c8f230]", bg: "bg-[#c8f230]/10" },
   target_updated:   { icon: Target,       color: "text-[#ffab00]", bg: "bg-[#ffab00]/10" },
   payment_approved: { icon: CreditCard,   color: "text-[#00c096]", bg: "bg-[#00c096]/10" },
   payment_pending:  { icon: CreditCard,   color: "text-[#ffab00]", bg: "bg-[#ffab00]/10" },
+  payment_rejected: { icon: CreditCard,   color: "text-[#ff4d4f]", bg: "bg-[#ff4d4f]/10" },
   default:          { icon: Bell,         color: "text-[#8b95a1]", bg: "bg-[#21272f]"    },
 };
+
+// ── Where each notification type should navigate to ───────────────────────────
+function getNavRoute(notification, userRole) {
+  const isAdmin = ["admin", "manager", "supervisor"].includes(userRole);
+  const { type } = notification;
+
+  switch (type) {
+    case "order_pending":
+      return isAdmin ? "/approvals" : "/orders";
+    case "order_approved":
+    case "order_rejected":
+    case "order_revision":
+      return "/orders";
+    case "payment_pending":
+      return isAdmin ? "/payment-approvals" : "/orders";
+    case "payment_approved":
+    case "payment_rejected":
+    case "order_fully_paid":
+      return "/orders";
+    case "target_set":
+    case "target_updated":
+      return "/targets";
+    case "task_assigned":
+    case "task_overdue":
+      return "/tasks";
+    case "expense_approved":
+    case "expense_rejected":
+      return "/expenses";
+    case "sos_alert":
+      return isAdmin ? "/map" : "/sos";
+    case "geofence_breach":
+      return isAdmin ? "/map" : "/dashboard";
+    case "attendance_alert":
+      return "/attendance";
+    default:
+      return "/dashboard";
+  }
+}
 
 function NotifIcon({ type }) {
   const cfg = TYPE_CONFIG[type] ?? TYPE_CONFIG.default;
@@ -42,33 +83,30 @@ function groupByDate(notifications) {
   const groups = { Today: [], Yesterday: [], Older: [] };
   for (const n of notifications) {
     const d = new Date(n.created);
-    if (isToday(d))     groups.Today.push(n);
+    if (isToday(d))          groups.Today.push(n);
     else if (isYesterday(d)) groups.Yesterday.push(n);
-    else                groups.Older.push(n);
+    else                     groups.Older.push(n);
   }
   return groups;
 }
 
 export default function NotificationBell() {
-  const { user } = useAuth();
+  const { user }      = useAuth();
+  const navigate      = useNavigate();
   const { notifications, unreadCount, load, subscribe, markRead, markAllRead, requestPermission } =
     useNotifications();
-  const [open, setOpen]         = useState(false);
-  const prevCountRef            = useRef(unreadCount);
-  const bellRef                 = useRef(null);
+  const [open, setOpen]  = useState(false);
+  const prevCountRef     = useRef(unreadCount);
+  const bellRef          = useRef(null);
 
   // Request browser notification permission on mount
-  useEffect(() => {
-    requestPermission();
-  }, []);
+  useEffect(() => { requestPermission(); }, []);
 
   // Load + subscribe on mount
   useEffect(() => {
     if (!user?.id) return;
     load(user.id);
     subscribe(user.id);
-
-    // Refresh every 30s as fallback (realtime handles instant updates)
     const interval = setInterval(() => load(user.id), 30000);
     return () => clearInterval(interval);
   }, [user?.id]);
@@ -82,15 +120,16 @@ export default function NotificationBell() {
     prevCountRef.current = unreadCount;
   }, [unreadCount]);
 
-  // ── Auto mark as read when panel is open and user sees notifications ──────
-  const handleOpen = useCallback(() => {
-    setOpen((v) => !v);
-  }, []);
-
-  // ── Mark read on click ────────────────────────────────────────────────────
+  // ── Click notification: mark read + navigate to relevant page ────────────
   const handleNotifClick = useCallback((n) => {
+    // Mark as read immediately
     if (!n.is_read) markRead(n.id);
-  }, [markRead]);
+
+    // Navigate to the relevant page
+    const route = getNavRoute(n, user?.role);
+    setOpen(false);
+    navigate(route);
+  }, [markRead, navigate, user?.role]);
 
   const groups = groupByDate(notifications);
 
@@ -99,7 +138,7 @@ export default function NotificationBell() {
       {/* Bell button */}
       <button
         ref={bellRef}
-        onClick={handleOpen}
+        onClick={() => setOpen((v) => !v)}
         className="relative text-[#8b95a1] hover:text-white transition-colors p-2 rounded-xl hover:bg-[#181c21]"
         aria-label="Notifications"
       >
@@ -117,9 +156,10 @@ export default function NotificationBell() {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
 
           {/* Panel */}
-          <div className="absolute right-0 top-full mt-2 w-80 bg-[#111418] border border-[#21272f] rounded-2xl shadow-2xl z-50 overflow-hidden"
-            style={{ animation: "slideDown 0.15s ease-out" }}>
-
+          <div
+            className="absolute right-0 top-full mt-2 w-80 bg-[#111418] border border-[#21272f] rounded-2xl shadow-2xl z-50 overflow-hidden"
+            style={{ animation: "slideDown 0.15s ease-out" }}
+          >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-[#21272f]">
               <div className="flex items-center gap-2">
@@ -131,17 +171,14 @@ export default function NotificationBell() {
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-2">
-                {unreadCount > 0 && (
-                  <button
-                    onClick={() => markAllRead()}
-                    className="flex items-center gap-1 text-xs text-[#8b95a1] hover:text-[#c8f230] transition-colors"
-                  >
-                    <CheckCheck size={12} />
-                    All read
-                  </button>
-                )}
-              </div>
+              {unreadCount > 0 && (
+                <button
+                  onClick={() => markAllRead()}
+                  className="flex items-center gap-1 text-xs text-[#8b95a1] hover:text-[#c8f230] transition-colors"
+                >
+                  <CheckCheck size={12} /> All read
+                </button>
+              )}
             </div>
 
             {/* Notification list grouped by date */}
@@ -156,14 +193,11 @@ export default function NotificationBell() {
                   if (items.length === 0) return null;
                   return (
                     <div key={label}>
-                      {/* Date group header */}
                       <div className="px-4 py-1.5 bg-[#0a0d0f]/60 border-b border-[#21272f]">
                         <span className="text-[10px] font-bold text-[#4a5568] uppercase tracking-widest">
                           {label}
                         </span>
                       </div>
-
-                      {/* Items */}
                       <div className="divide-y divide-[#21272f]">
                         {items.map((n) => (
                           <div
@@ -183,9 +217,15 @@ export default function NotificationBell() {
                               <p className="text-xs text-[#8b95a1] mt-0.5 leading-relaxed line-clamp-2">
                                 {n.body}
                               </p>
-                              <p className="text-[10px] text-[#4a5568] mt-1 font-mono">
-                                {safeDistance(n.created)}
-                              </p>
+                              <div className="flex items-center justify-between mt-1">
+                                <p className="text-[10px] text-[#4a5568] font-mono">
+                                  {safeDistance(n.created)}
+                                </p>
+                                {/* Show where it will navigate to */}
+                                <p className="text-[10px] text-[#c8f230]/50">
+                                  {getNavRoute(n, user?.role).replace("/", "")} →
+                                </p>
+                              </div>
                             </div>
                             {!n.is_read && (
                               <div className="w-2 h-2 rounded-full bg-[#c8f230] flex-shrink-0 mt-1.5 animate-pulse" />
@@ -204,7 +244,7 @@ export default function NotificationBell() {
               <div className="px-4 py-2.5 border-t border-[#21272f] text-center">
                 <p className="text-[10px] text-[#4a5568]">
                   {unreadCount > 0
-                    ? `${unreadCount} unread · tap to mark as read`
+                    ? `${unreadCount} unread · tap to go to page`
                     : `All caught up · ${notifications.length} notifications`}
                 </p>
               </div>
@@ -213,7 +253,6 @@ export default function NotificationBell() {
         </>
       )}
 
-      {/* Slide-down animation */}
       <style>{`
         @keyframes slideDown {
           from { opacity: 0; transform: translateY(-8px); }
