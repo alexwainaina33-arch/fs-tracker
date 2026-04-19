@@ -6,6 +6,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../store/auth";
 import { useGPS } from "../hooks/useGPS";
 import { useTheme } from "../store/theme";
+import { useRealtimeSync } from "../hooks/useRealtimeSync";
 import OfflineBanner from "./OfflineBanner";
 import NotificationBell from "./NotificationBell";
 import PWAManager from "./PWAManager";
@@ -57,10 +58,13 @@ export default function Layout() {
 
   useEffect(() => { init(); }, []);
 
-  const isAdmin  = ["admin","manager","supervisor"].includes(user?.role);
-  const navItems = isAdmin ? NAV_ADMIN : NAV_FIELD;
-  const allNav   = [...NAV_ADMIN, ...NAV_FIELD];
-  const isLight  = theme === "light";
+  // ── Real-time sync — subscribes to all collections, updates instantly ──────
+  useRealtimeSync();
+
+  const isAdmin   = ["admin","manager","supervisor"].includes(user?.role);
+  const navItems  = isAdmin ? NAV_ADMIN : NAV_FIELD;
+  const allNav    = [...NAV_ADMIN, ...NAV_FIELD];
+  const isLight   = theme === "light";
   const isMapPage = location.pathname === "/map";
 
   // ── Theme classes ───────────────────────────────────────────────────────────
