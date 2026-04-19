@@ -1,33 +1,29 @@
 // src/components/PWAManager.jsx
-// Handles: install prompt, auto-update on deploy, offline/online banner
+// Handles: install prompt, SILENT auto-update, iOS hint
+// Updates happen automatically in the background — users never see a prompt
 
 import { useState, useEffect, useCallback } from "react";
 import { Download } from "lucide-react";
 
-// ─── REGISTER SERVICE WORKER ──────────────────────────────────────────────────
+// ─── REGISTER SERVICE WORKER (silent auto-update) ────────────────────────────
 export function useServiceWorker() {
-  const [swReg, setSwReg] = useState(null);
-  const [updateReady, setUpdateReady] = useState(false);
-
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
 
     navigator.serviceWorker
       .register("/sw.js", { scope: "/" })
       .then((reg) => {
-        setSwReg(reg);
         console.log("[PWA] Service worker registered");
 
-        // ── Check for new SW version every 30 seconds ──────────────────────
+        // Check for new SW version every 30 seconds
         const interval = setInterval(() => reg.update(), 30 * 1000);
 
-        // ── New SW found during this session ───────────────────────────────
+        // New SW found — silently activate it immediately, no user prompt
         reg.addEventListener("updatefound", () => {
           const newSW = reg.installing;
           if (!newSW) return;
 
           newSW.addEventListener("statechange", () => {
-            // "installed" + controller exists = update ready for this open tab
             if (newSW.state === "installed" && navigator.serviceWorker.controller) {
               console.log("[PWA] Update ready — applying silently");
               newSW.postMessage("SKIP_WAITING");
@@ -39,18 +35,15 @@ export function useServiceWorker() {
       })
       .catch((err) => console.warn("[PWA] SW registration failed:", err));
 
-    // ── Message from SW: new version just activated ─────────────────────────
-    // sw.js sends SW_UPDATED after claiming all clients on activate
+    // When SW sends SW_UPDATED message — reload silently
     navigator.serviceWorker.addEventListener("message", (event) => {
       if (event.data?.type === "SW_UPDATED") {
         console.log("[PWA] SW_UPDATED received — reloading");
-        // Small delay so the SW finishes activating cleanly
         setTimeout(() => window.location.reload(), 300);
       }
     });
 
-    // ── If the controlling SW changed (new one took over) — reload ──────────
-    // This handles the case where another tab already clicked "Update Now"
+    // When the new SW takes control — reload silently
     let refreshing = false;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (!refreshing) {
@@ -59,14 +52,6 @@ export function useServiceWorker() {
       }
     });
   }, []);
-
-  const applyUpdate = useCallback(() => {
-    if (!swReg?.waiting) return;
-    swReg.waiting.postMessage("SKIP_WAITING");
-    // controllerchange listener above will reload
-  }, [swReg]);
-
-  return { updateReady, applyUpdate };
 }
 
 // ─── INSTALL PROMPT HOOK ──────────────────────────────────────────────────────
@@ -147,27 +132,6 @@ export function InstallBanner() {
   );
 }
 
-// ─── UPDATE BANNER (shown if auto-reload didn't trigger) ──────────────────────
-export function UpdateBanner() {
-  const { updateReady, applyUpdate } = useServiceWorker();
-  if (!updateReady) return null;
-
-  return (
-    <div className="fixed top-0 left-0 right-0 z-[9998] px-4 pt-safe">
-      <div className="bg-[#3b82f6] rounded-b-2xl px-4 py-3 flex items-center gap-3 shadow-lg">
-        <RefreshCw size={14} className="text-white animate-spin flex-shrink-0" />
-        <p className="text-white text-xs flex-1">New version of FieldTrack available!</p>
-        <button
-          onClick={applyUpdate}
-          className="text-xs font-bold text-[#3b82f6] bg-white px-3 py-1.5 rounded-xl hover:bg-[#f0f9ff] transition-colors whitespace-nowrap"
-        >
-          Update Now
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ─── iOS INSTALL INSTRUCTIONS ─────────────────────────────────────────────────
 export function IOSInstallHint() {
   const [show, setShow] = useState(false);
@@ -217,6 +181,7 @@ export function IOSInstallHint() {
 
 // ─── MAIN EXPORT ──────────────────────────────────────────────────────────────
 export default function PWAManager() {
+  useServiceWorker();
   return (
     <>
       <InstallBanner />
