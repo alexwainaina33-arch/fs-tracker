@@ -90,7 +90,7 @@ export default function Layout() {
 
       {/* ── SIDEBAR ──────────────────────────────────────────────────────── */}
       <aside className={`
-        fixed inset-y-0 left-0 z-50 w-56 flex flex-col border-r
+        fixed inset-y-0 left-0 z-[700] w-56 flex flex-col border-r
         transition-transform duration-300 ease-out
         ${sidebarBg}
         ${open ? "translate-x-0" : "-translate-x-full"}
@@ -154,7 +154,7 @@ export default function Layout() {
       </aside>
 
       {/* Backdrop */}
-      {open && <div onClick={() => setOpen(false)} className="fixed inset-0 z-40 bg-black/60 lg:hidden" />}
+      {open && <div onClick={() => setOpen(false)} className="fixed inset-0 z-[650] bg-black/60 lg:hidden" />}
 
       {/* ── MAIN CONTENT ──────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
