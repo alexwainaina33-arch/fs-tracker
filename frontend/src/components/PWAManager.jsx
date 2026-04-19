@@ -2,8 +2,7 @@
 // Handles: install prompt, auto-update on deploy, offline/online banner
 
 import { useState, useEffect, useCallback } from "react";
-import toast from "react-hot-toast";
-import { Download, RefreshCw } from "lucide-react";
+import { Download } from "lucide-react";
 
 // ─── REGISTER SERVICE WORKER ──────────────────────────────────────────────────
 export function useServiceWorker() {
@@ -30,8 +29,8 @@ export function useServiceWorker() {
           newSW.addEventListener("statechange", () => {
             // "installed" + controller exists = update ready for this open tab
             if (newSW.state === "installed" && navigator.serviceWorker.controller) {
-              console.log("[PWA] Update ready — prompting user");
-              setUpdateReady(true);
+              console.log("[PWA] Update ready — applying silently");
+              newSW.postMessage("SKIP_WAITING");
             }
           });
         });
@@ -220,7 +219,6 @@ export function IOSInstallHint() {
 export default function PWAManager() {
   return (
     <>
-      <UpdateBanner />
       <InstallBanner />
       <IOSInstallHint />
     </>
