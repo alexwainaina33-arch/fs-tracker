@@ -1,13 +1,17 @@
+// src/pages/ExpensesPage.jsx
+// Offline-safe: expense claims queued when no internet (photos saved when online)
+
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { pb, fileUrl } from "../lib/pb";
 import { useAuth } from "../store/auth";
+import { isOnline, enqueueExpense } from "../lib/offlineQueue";
 import { Modal } from "../components/ui/Modal";
 import { Btn } from "../components/ui/Btn";
 import { Badge } from "../components/ui/Badge";
 import { Input, Select, Textarea } from "../components/ui/Input";
 import CameraCapture from "../components/CameraCapture";
-import { Plus, Camera, Receipt, Check, X } from "lucide-react";
+import { Plus, Camera, Receipt, Check, X, WifiOff } from "lucide-react";
 import { format } from "date-fns";
 import toast from "react-hot-toast";
 
@@ -19,11 +23,15 @@ export default function ExpensesPage() {
   const { user } = useAuth();
   const qc      = useQueryClient();
   const isAdmin = ["admin","manager"].includes(user?.role);
-  const [showCreate,    setShowCreate]    = useState(false);
-  const [camOpen,       setCamOpen]       = useState(false);
-  const [receiptPhoto,  setReceiptPhoto]  = useState(null);
+  const [showCreate,   setShowCreate]   = useState(false);
+  const [camOpen,      setCamOpen]      = useState(false);
+  const [receiptPhoto, setReceiptPhoto] = useState(null);
+  const online = isOnline();
 
-  const blank = { expense_type:"fuel", description:"", amount:"", currency:"KES", expense_date: format(new Date(),"yyyy-MM-dd") };
+  const blank = {
+    expense_type: "fuel", description: "", amount: "", currency: "KES",
+    expense_date: format(new Date(), "yyyy-MM-dd"),
+  };
   const [form, setForm] = useState(blank);
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
@@ -38,6 +46,22 @@ export default function ExpensesPage() {
 
   const createMut = useMutation({
     mutationFn: async () => {
+      // ── OFFLINE path ──────────────────────────────────────────────────────
+      if (!isOnline()) {
+        // Queue core data (photo cannot be stored offline)
+        await enqueueExpense({
+          expense_type: form.expense_type,
+          description:  form.description,
+          amount:       Number(form.amount),
+          currency:     form.currency,
+          expense_date: form.expense_date,
+          submitted_by: user.id,
+          status:       "pending",
+        });
+        return { _offline: true };
+      }
+
+      // ── ONLINE path ───────────────────────────────────────────────────────
       const fd = new FormData();
       Object.entries(form).forEach(([k, v]) => fd.append(k, v));
       fd.append("submitted_by", user.id);
@@ -45,25 +69,49 @@ export default function ExpensesPage() {
       if (receiptPhoto?.blob) fd.append("receipts", receiptPhoto.blob, `receipt-${Date.now()}.jpg`);
       return pb.collection("ft_expenses").create(fd);
     },
-    onSuccess: () => { qc.invalidateQueries(["expenses"]); setShowCreate(false); setForm(blank); setReceiptPhoto(null); toast.success("Claim submitted!"); },
-    onError:   () => toast.error("Failed to submit"),
+    onSuccess: (result) => {
+      qc.invalidateQueries(["expenses"]);
+      setShowCreate(false);
+      setForm(blank);
+      setReceiptPhoto(null);
+      if (result?._offline) {
+        toast("📴 Expense saved offline — will submit when connected", {
+          icon: "📴", duration: 5000,
+          style: { background: "#181c21", color: "#ff9f43", border: "1px solid #ff9f43/30" },
+        });
+      } else {
+        toast.success("Claim submitted!");
+      }
+    },
+    onError: () => toast.error("Failed to submit"),
   });
 
   const approveMut = useMutation({
-    mutationFn: ({ id, status }) => pb.collection("ft_expenses").update(id, { status, approved_by: user.id }),
-    onSuccess:  () => { qc.invalidateQueries(["expenses"]); toast.success("Updated!"); },
+    mutationFn: ({ id, status }) =>
+      pb.collection("ft_expenses").update(id, { status, approved_by: user.id }),
+    onSuccess: () => { qc.invalidateQueries(["expenses"]); toast.success("Updated!"); },
   });
 
-  const totalPending = data?.items.filter(e => e.status === "pending").reduce((s, e) => s + e.amount, 0) ?? 0;
+  const totalPending = data?.items.filter(e => e.status === "pending")
+    .reduce((s, e) => s + e.amount, 0) ?? 0;
 
   return (
     <div className="p-5 max-w-5xl mx-auto space-y-5 pb-8">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-display font-bold text-2xl text-white">Expenses</h1>
-          {isAdmin && totalPending > 0 && <p className="text-[#ffab00] text-sm mt-0.5">KES {totalPending.toLocaleString()} pending</p>}
+          {isAdmin && totalPending > 0 && (
+            <p className="text-[#ffab00] text-sm mt-0.5">KES {totalPending.toLocaleString()} pending</p>
+          )}
         </div>
-        <Btn onClick={() => setShowCreate(true)}><Plus size={16} /> Claim Expense</Btn>
+        <div className="flex items-center gap-2">
+          {!online && (
+            <span className="flex items-center gap-1.5 text-xs text-[#ff9f43] bg-[#ff9f43]/10 border border-[#ff9f43]/20 px-3 py-1.5 rounded-xl">
+              <WifiOff size={12} /> Offline
+            </span>
+          )}
+          <Btn onClick={() => setShowCreate(true)}><Plus size={16} /> Claim Expense</Btn>
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -110,6 +158,16 @@ export default function ExpensesPage() {
       </div>
 
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Submit Expense">
+        {/* Offline notice */}
+        {!online && (
+          <div className="flex items-center gap-2 px-3 py-2.5 mb-4 bg-[#ff9f43]/10 border border-[#ff9f43]/20 rounded-xl">
+            <WifiOff size={13} className="text-[#ff9f43] flex-shrink-0" />
+            <p className="text-xs text-[#ff9f43]">
+              You're offline. Expense will be saved and submitted automatically when you reconnect.
+              Receipt photo will not be attached.
+            </p>
+          </div>
+        )}
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <Select label="Type" value={form.expense_type} onChange={e => set("expense_type", e.target.value)}>
@@ -122,31 +180,34 @@ export default function ExpensesPage() {
           <Input label="Amount *" type="number" placeholder="1500" value={form.amount} onChange={e => set("amount", e.target.value)} />
           <Input label="Date" type="date" value={form.expense_date} onChange={e => set("expense_date", e.target.value)} />
           <Textarea label="Description" placeholder="Fuel Nakuru–Nairobi" rows={2} value={form.description} onChange={e => set("description", e.target.value)} />
-          <div>
-            <label className="text-xs font-medium text-[#8b95a1] uppercase tracking-wider block mb-2">Receipt Photo</label>
-            {receiptPhoto ? (
-              <div className="relative w-full h-40 rounded-xl overflow-hidden border border-[#21272f]">
-                <img src={receiptPhoto.dataUrl} alt="receipt" className="w-full h-full object-cover" />
-                <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-3 py-1 font-mono text-[10px] text-[#c8f230]">
-                  {receiptPhoto.timestamp ? format(new Date(receiptPhoto.timestamp), "dd MMM yyyy HH:mm:ss") : ""} · timestamped
+          {/* Only show receipt camera when online */}
+          {online && (
+            <div>
+              <label className="text-xs font-medium text-[#8b95a1] uppercase tracking-wider block mb-2">Receipt Photo</label>
+              {receiptPhoto ? (
+                <div className="relative w-full h-40 rounded-xl overflow-hidden border border-[#21272f]">
+                  <img src={receiptPhoto.dataUrl} alt="receipt" className="w-full h-full object-cover" />
+                  <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-3 py-1 font-mono text-[10px] text-[#c8f230]">
+                    {receiptPhoto.timestamp ? format(new Date(receiptPhoto.timestamp), "dd MMM yyyy HH:mm:ss") : ""} · timestamped
+                  </div>
+                  <button onClick={() => setReceiptPhoto(null)}
+                    className="absolute top-2 right-2 w-7 h-7 bg-black/60 rounded-full flex items-center justify-center text-white">
+                    <X size={14} />
+                  </button>
                 </div>
-                <button onClick={() => setReceiptPhoto(null)}
-                  className="absolute top-2 right-2 w-7 h-7 bg-black/60 rounded-full flex items-center justify-center text-white">
-                  <X size={14} />
+              ) : (
+                <button onClick={() => setCamOpen(true)}
+                  className="w-full h-28 rounded-xl border border-dashed border-[#21272f] hover:border-[#c8f230]/50 flex flex-col items-center justify-center gap-2 text-[#8b95a1] hover:text-[#c8f230] transition-colors">
+                  <Camera size={24} /><span className="text-sm">Tap to photograph receipt</span>
                 </button>
-              </div>
-            ) : (
-              <button onClick={() => setCamOpen(true)}
-                className="w-full h-28 rounded-xl border border-dashed border-[#21272f] hover:border-[#c8f230]/50 flex flex-col items-center justify-center gap-2 text-[#8b95a1] hover:text-[#c8f230] transition-colors">
-                <Camera size={24} /><span className="text-sm">Tap to photograph receipt</span>
-              </button>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex gap-3 pt-5 border-t border-[#21272f] mt-5">
           <Btn variant="ghost" onClick={() => setShowCreate(false)} className="flex-1">Cancel</Btn>
           <Btn onClick={() => createMut.mutate()} disabled={!form.amount || createMut.isPending} className="flex-1">
-            {createMut.isPending ? "Submitting…" : "Submit Claim"}
+            {createMut.isPending ? "Submitting…" : online ? "Submit Claim" : "Save Offline"}
           </Btn>
         </div>
       </Modal>

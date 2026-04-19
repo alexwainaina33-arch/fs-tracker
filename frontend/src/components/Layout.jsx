@@ -1,3 +1,6 @@
+// src/components/Layout.jsx
+// Main app shell — includes PWAManager for install prompt + update detection
+
 import React, { useState, useEffect } from "react";
 import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../store/auth";
@@ -5,6 +8,7 @@ import { useGPS } from "../hooks/useGPS";
 import { useTheme } from "../store/theme";
 import OfflineBanner from "./OfflineBanner";
 import NotificationBell from "./NotificationBell";
+import PWAManager from "./PWAManager";
 import {
   LayoutDashboard, Map, CheckSquare, Clock, Receipt,
   FileText, Users, LogOut, Menu, X,
@@ -14,41 +18,41 @@ import {
 } from "lucide-react";
 
 const NAV_ADMIN = [
-  { to: "/dashboard",          icon: LayoutDashboard, label: "Dashboard"         },
-  { to: "/map",                icon: Map,             label: "Live Map"          },
-  { to: "/tasks",              icon: CheckSquare,     label: "Tasks"             },
-  { to: "/attendance",         icon: Clock,           label: "Attendance"        },
-  { to: "/expenses",           icon: Receipt,         label: "Expenses"          },
-  { to: "/orders",             icon: ShoppingCart,    label: "Orders"            },
-  { to: "/farmer-visits",      icon: Sprout,          label: "Farmer Visits"     },
-  { to: "/approvals",          icon: CheckCircle,     label: "Approvals"         },
-  { to: "/payment-approvals",  icon: CreditCard,      label: "Pmnt Approvals"    },
-  { to: "/targets",            icon: Target,          label: "Targets"           },
-  { to: "/leaderboard",        icon: Trophy,          label: "Leaderboard"       },
-  { to: "/reports",            icon: FileText,        label: "Reports"           },
-  { to: "/advanced-reports",   icon: BarChart2,       label: "Adv. Reports"      },
-  { to: "/team",               icon: Users,           label: "Team"              },
-  { to: "/geofences",          icon: Shield,          label: "Geofences"         },
+  { to: "/dashboard",         icon: LayoutDashboard, label: "Dashboard"      },
+  { to: "/map",               icon: Map,             label: "Live Map"       },
+  { to: "/tasks",             icon: CheckSquare,     label: "Tasks"          },
+  { to: "/attendance",        icon: Clock,           label: "Attendance"     },
+  { to: "/expenses",          icon: Receipt,         label: "Expenses"       },
+  { to: "/orders",            icon: ShoppingCart,    label: "Orders"         },
+  { to: "/farmer-visits",     icon: Sprout,          label: "Farmer Visits"  },
+  { to: "/approvals",         icon: CheckCircle,     label: "Approvals"      },
+  { to: "/payment-approvals", icon: CreditCard,      label: "Pmnt Approvals" },
+  { to: "/targets",           icon: Target,          label: "Targets"        },
+  { to: "/leaderboard",       icon: Trophy,          label: "Leaderboard"    },
+  { to: "/reports",           icon: FileText,        label: "Reports"        },
+  { to: "/advanced-reports",  icon: BarChart2,       label: "Adv. Reports"   },
+  { to: "/team",              icon: Users,           label: "Team"           },
+  { to: "/geofences",         icon: Shield,          label: "Geofences"      },
 ];
 
 const NAV_FIELD = [
-  { to: "/dashboard",      icon: LayoutDashboard, label: "Dashboard"     },
-  { to: "/tasks",          icon: CheckSquare,     label: "My Tasks"      },
-  { to: "/attendance",     icon: Clock,           label: "Attendance"    },
-  { to: "/expenses",       icon: Receipt,         label: "Expenses"      },
-  { to: "/orders",         icon: ShoppingCart,    label: "Orders"        },
-  { to: "/farmer-visits",  icon: Sprout,          label: "Farmer Visits" },
-  { to: "/leaderboard",    icon: Trophy,          label: "Leaderboard"   },
-  { to: "/reports",        icon: FileText,        label: "Reports"       },
+  { to: "/dashboard",     icon: LayoutDashboard, label: "Dashboard"     },
+  { to: "/tasks",         icon: CheckSquare,     label: "My Tasks"      },
+  { to: "/attendance",    icon: Clock,           label: "Attendance"    },
+  { to: "/expenses",      icon: Receipt,         label: "Expenses"      },
+  { to: "/orders",        icon: ShoppingCart,    label: "Orders"        },
+  { to: "/farmer-visits", icon: Sprout,          label: "Farmer Visits" },
+  { to: "/leaderboard",   icon: Trophy,          label: "Leaderboard"   },
+  { to: "/reports",       icon: FileText,        label: "Reports"       },
 ];
 
 export default function Layout() {
-  const { user, logout }            = useAuth();
-  const { tracking, position, start, stop } = useGPS();
-  const { theme, toggle, init }     = useTheme();
-  const navigate                    = useNavigate();
-  const location                    = useLocation();
-  const [open, setOpen]             = useState(false);
+  const { user, logout }                        = useAuth();
+  const { tracking, position, start, stop }     = useGPS();
+  const { theme, toggle, init }                 = useTheme();
+  const navigate                                = useNavigate();
+  const location                                = useLocation();
+  const [open, setOpen]                         = useState(false);
 
   useEffect(() => { init(); }, []);
 
@@ -57,6 +61,7 @@ export default function Layout() {
   const allNav   = [...NAV_ADMIN, ...NAV_FIELD];
   const isLight  = theme === "light";
 
+  // ── Theme classes ───────────────────────────────────────────────────────────
   const sidebarBg    = isLight ? "bg-white border-[#e4e4e7]"   : "bg-[#0a0d0f] border-[#21272f]";
   const headerBg     = isLight ? "bg-white border-[#e4e4e7]"   : "bg-[#0a0d0f] border-[#21272f]";
   const logoText     = isLight ? "text-[#18181b]"               : "text-white";
@@ -67,26 +72,21 @@ export default function Layout() {
   const userNameCls  = isLight ? "text-[#18181b]"               : "text-white";
   const logoutCls    = isLight ? "text-[#71717a] hover:text-[#ff4d4f]" : "text-[#8b95a1] hover:text-[#ff4d4f]";
   const menuBtnCls   = isLight ? "text-[#71717a] hover:text-[#18181b]" : "text-[#8b95a1] hover:text-white";
-
-  const navActive   = isLight
-    ? "bg-[#f0ffd0] text-[#4a6000] font-medium"
-    : "bg-[#c8f230]/10 text-[#c8f230] font-medium";
-  const navInactive = isLight
-    ? "text-[#52525b] hover:text-[#18181b] hover:bg-[#f4f4f5]"
-    : "text-[#8b95a1] hover:text-[#c2cad4] hover:bg-[#181c21]";
-
-  const gpsBg = tracking
+  const navActive    = isLight ? "bg-[#f0ffd0] text-[#4a6000] font-medium" : "bg-[#c8f230]/10 text-[#c8f230] font-medium";
+  const navInactive  = isLight ? "text-[#52525b] hover:text-[#18181b] hover:bg-[#f4f4f5]" : "text-[#8b95a1] hover:text-[#c2cad4] hover:bg-[#181c21]";
+  const gpsBg        = tracking
     ? "bg-[#c8f230]/10 text-[#c8f230] border border-[#c8f230]/20"
     : isLight ? "bg-[#f4f4f5] text-[#71717a] border border-[#e4e4e7]" : "bg-[#21272f] text-[#8b95a1]";
-
-  const avatarBg = isLight
-    ? "bg-[#f0ffd0] border-[#c8f230]/50 text-[#4a6000]"
-    : "bg-[#c8f230]/15 border-[#c8f230]/30 text-[#c8f230]";
+  const avatarBg     = isLight ? "bg-[#f0ffd0] border-[#c8f230]/50 text-[#4a6000]" : "bg-[#c8f230]/15 border-[#c8f230]/30 text-[#c8f230]";
 
   return (
     <div className={`flex h-full overflow-hidden ${isLight ? "bg-[#f4f4f5]" : "bg-[#0a0d0f]"}`}>
       <OfflineBanner />
 
+      {/* ── PWA: install prompt + update banner ── */}
+      <PWAManager />
+
+      {/* ── SIDEBAR ──────────────────────────────────────────────────────── */}
       <aside className={`
         fixed inset-y-0 left-0 z-50 w-56 flex flex-col border-r
         transition-transform duration-300 ease-out
@@ -109,7 +109,7 @@ export default function Layout() {
           <button onClick={() => setOpen(false)} className={`lg:hidden ${subText}`}><X size={18} /></button>
         </div>
 
-        {/* GPS */}
+        {/* GPS toggle */}
         <div className={`px-3 py-2 border-b ${dividerColor}`}>
           <button onClick={tracking ? stop : start}
             className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-all ${gpsBg}`}>
@@ -121,7 +121,7 @@ export default function Layout() {
           </button>
         </div>
 
-        {/* Nav */}
+        {/* Navigation */}
         <nav className="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
           {navItems.map(({ to, icon: Icon, label }) => (
             <NavLink key={to} to={to} onClick={() => setOpen(false)}
@@ -134,7 +134,7 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* User */}
+        {/* User footer */}
         <div className={`px-3 py-3 border-t ${dividerColor}`}>
           <div className="flex items-center gap-3 px-3 py-2">
             <div className={`w-8 h-8 rounded-full border flex items-center justify-center text-sm font-bold flex-shrink-0 ${avatarBg}`}>
@@ -151,8 +151,10 @@ export default function Layout() {
         </div>
       </aside>
 
+      {/* Backdrop */}
       {open && <div onClick={() => setOpen(false)} className="fixed inset-0 z-40 bg-black/60 lg:hidden" />}
 
+      {/* ── MAIN CONTENT ──────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <header className={`flex items-center gap-3 px-4 h-16 border-b flex-shrink-0 ${headerBg}`}>
           <button onClick={() => setOpen(true)} className={`lg:hidden p-1.5 ${menuBtnCls}`}>
@@ -169,7 +171,7 @@ export default function Layout() {
               SOS
             </button>
           )}
-          <button onClick={toggle} title={isLight ? "Switch to dark mode" : "Switch to light mode"}
+          <button onClick={toggle} title={isLight ? "Dark mode" : "Light mode"}
             className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${toggleBg}`}>
             {isLight ? <Moon size={16} /> : <Sun size={16} />}
           </button>

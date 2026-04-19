@@ -18,16 +18,13 @@ export const useNotifications = create((set, get) => ({
       const records = await pb.collection("ft_notifications").getList(1, 50, {
         filter: `recipient = "${userId}"`,
         sort: "-id",
-        requestKey: `notif-load-${userId}`,
+        requestKey: `notif-load-${userId}`,   // prevents auto-cancellation
       });
       const unread = records.items.filter((n) => !n.is_read).length;
-      set({
-        notifications: records.items,
-        unreadCount: unread,
-        isLoading: false,
-      });
+      set({ notifications: records.items, unreadCount: unread, isLoading: false });
     } catch (e) {
-      console.warn("Failed to load notifications:", e);
+      // Silently ignore auto-cancellation (status 0) — harmless re-render artifact
+      if (e?.status !== 0) console.warn("Failed to load notifications:", e);
       set({ isLoading: false });
     }
   },
@@ -35,14 +32,17 @@ export const useNotifications = create((set, get) => ({
   // ─── START REALTIME SUBSCRIPTION ─────────────────────────────────────────
   subscribe: async (userId) => {
     if (!userId) return;
+
+    // Unsubscribe previous listener before starting a new one
     const prev = get()._unsub;
-    if (prev) prev();
+    if (prev) { try { prev(); } catch (_) {} }
 
     try {
       const unsub = await pb.collection("ft_notifications").subscribe(
         `recipient="${userId}"`,
         (e) => {
           if (e.record.recipient !== userId) return;
+
           if (e.action === "create") {
             set((state) => ({
               notifications: [e.record, ...state.notifications].slice(0, 50),
@@ -51,7 +51,7 @@ export const useNotifications = create((set, get) => ({
             if (Notification.permission === "granted") {
               new Notification(e.record.title, {
                 body: e.record.body,
-                icon: "/favicon.ico",
+                icon: "/icons/icon-192x192.png",   // use our PWA icon
               });
             }
           } else if (e.action === "update") {
@@ -73,7 +73,10 @@ export const useNotifications = create((set, get) => ({
       );
       set({ _unsub: unsub });
     } catch (e) {
-      console.warn("Realtime subscription failed:", e);
+      // Silently ignore 403 — happens on re-login / token refresh, auto-recovers
+      if (e?.status !== 403 && e?.status !== 0) {
+        console.warn("Realtime subscription failed:", e);
+      }
     }
   },
 
@@ -114,12 +117,12 @@ export const useNotifications = create((set, get) => ({
   unsubscribe: () => {
     const unsub = get()._unsub;
     if (unsub) {
-      unsub();
+      try { unsub(); } catch (_) {}
       set({ _unsub: null });
     }
   },
 
-  // ─── REQUEST BROWSER PERMISSION ──────────────────────────────────────────
+  // ─── REQUEST BROWSER NOTIFICATION PERMISSION ──────────────────────────────
   requestPermission: async () => {
     if ("Notification" in window && Notification.permission === "default") {
       await Notification.requestPermission();
