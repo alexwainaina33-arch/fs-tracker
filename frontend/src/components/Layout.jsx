@@ -20,7 +20,7 @@ import {
 const NAV_ADMIN = [
   { to: "/dashboard",         icon: LayoutDashboard, label: "Dashboard"      },
   { to: "/map",               icon: Map,             label: "Live Map"       },
-    { to: "/team-summary",      icon: Users,           label: "Team Summary"   },
+  { to: "/team-summary",      icon: Users,           label: "Team Summary"   },
   { to: "/tasks",             icon: CheckSquare,     label: "Tasks"          },
   { to: "/attendance",        icon: Clock,           label: "Attendance"     },
   { to: "/expenses",          icon: Receipt,         label: "Expenses"       },
@@ -61,6 +61,7 @@ export default function Layout() {
   const navItems = isAdmin ? NAV_ADMIN : NAV_FIELD;
   const allNav   = [...NAV_ADMIN, ...NAV_FIELD];
   const isLight  = theme === "light";
+  const isMapPage = location.pathname === "/map";
 
   // ── Theme classes ───────────────────────────────────────────────────────────
   const sidebarBg    = isLight ? "bg-white border-[#e4e4e7]"   : "bg-[#0a0d0f] border-[#21272f]";
@@ -157,7 +158,9 @@ export default function Layout() {
 
       {/* ── MAIN CONTENT ──────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <header className={`flex items-center gap-3 px-4 h-16 border-b flex-shrink-0 ${headerBg}`}>
+
+        {/* Header — z-[600] keeps it above Leaflet map (which uses up to z-500) */}
+        <header className={`flex items-center gap-3 px-4 h-16 border-b flex-shrink-0 relative z-[600] ${headerBg}`}>
           <button onClick={() => setOpen(true)} className={`lg:hidden p-1.5 ${menuBtnCls}`}>
             <Menu size={20} />
           </button>
@@ -179,9 +182,11 @@ export default function Layout() {
           <NotificationBell />
         </header>
 
-        <main className="flex-1 overflow-y-auto">
+        {/* main — overflow-hidden on map page so Leaflet doesn't escape its container */}
+        <main className={`flex-1 ${isMapPage ? "overflow-hidden" : "overflow-y-auto"}`}>
           <Outlet />
         </main>
+
       </div>
     </div>
   );
