@@ -4,6 +4,30 @@
 import { create } from "zustand";
 import { pb } from "../lib/pb";
 
+// ── Tiny notification sound using Web Audio API (no file needed) ──────────────
+function playNotifSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.3);
+  } catch (_) {}
+}
+
+// ── Vibrate on mobile ─────────────────────────────────────────────────────────
+function vibrate() {
+  try {
+    if ("vibrate" in navigator) navigator.vibrate([100, 50, 100]);
+  } catch (_) {}
+}
+
 export const useNotifications = create((set, get) => ({
   notifications: [],
   unreadCount: 0,
@@ -17,13 +41,12 @@ export const useNotifications = create((set, get) => ({
     try {
       const records = await pb.collection("ft_notifications").getList(1, 50, {
         filter: `recipient = "${userId}"`,
-        sort: "-id",
-        requestKey: `notif-load-${userId}`,   // prevents auto-cancellation
+        sort: "-created",
+        requestKey: `notif-load-${userId}`,
       });
       const unread = records.items.filter((n) => !n.is_read).length;
       set({ notifications: records.items, unreadCount: unread, isLoading: false });
     } catch (e) {
-      // Silently ignore auto-cancellation (status 0) — harmless re-render artifact
       if (e?.status !== 0) console.warn("Failed to load notifications:", e);
       set({ isLoading: false });
     }
@@ -33,7 +56,6 @@ export const useNotifications = create((set, get) => ({
   subscribe: async (userId) => {
     if (!userId) return;
 
-    // Unsubscribe previous listener before starting a new one
     const prev = get()._unsub;
     if (prev) { try { prev(); } catch (_) {} }
 
@@ -44,52 +66,68 @@ export const useNotifications = create((set, get) => ({
           if (e.record.recipient !== userId) return;
 
           if (e.action === "create") {
+            // Add to top of list
             set((state) => ({
               notifications: [e.record, ...state.notifications].slice(0, 50),
               unreadCount: state.unreadCount + 1,
             }));
+
+            // 🔔 Sound + vibration alert
+            playNotifSound();
+            vibrate();
+
+            // Browser push notification (if permission granted)
             if (Notification.permission === "granted") {
               new Notification(e.record.title, {
                 body: e.record.body,
-                icon: "/icons/icon-192x192.png",   // use our PWA icon
+                icon: "/icons/icon-192x192.png",
+                badge: "/icons/icon-72x72.png",
+                tag: e.record.id,
               });
             }
           } else if (e.action === "update") {
-            set((state) => ({
-              notifications: state.notifications.map((n) =>
+            set((state) => {
+              const updated = state.notifications.map((n) =>
                 n.id === e.record.id ? e.record : n
-              ),
-              unreadCount: state.notifications.filter((n) => !n.is_read).length,
-            }));
+              );
+              return {
+                notifications: updated,
+                unreadCount: updated.filter((n) => !n.is_read).length,
+              };
+            });
           } else if (e.action === "delete") {
-            set((state) => ({
-              notifications: state.notifications.filter((n) => n.id !== e.record.id),
-              unreadCount: state.notifications.filter(
-                (n) => !n.is_read && n.id !== e.record.id
-              ).length,
-            }));
+            set((state) => {
+              const filtered = state.notifications.filter((n) => n.id !== e.record.id);
+              return {
+                notifications: filtered,
+                unreadCount: filtered.filter((n) => !n.is_read).length,
+              };
+            });
           }
         }
       );
       set({ _unsub: unsub });
     } catch (e) {
-      // Silently ignore 403 — happens on re-login / token refresh, auto-recovers
       if (e?.status !== 403 && e?.status !== 0) {
         console.warn("Realtime subscription failed:", e);
       }
     }
   },
 
-  // ─── MARK AS READ ─────────────────────────────────────────────────────────
+  // ─── MARK SINGLE AS READ ──────────────────────────────────────────────────
   markRead: async (notifId) => {
+    // Optimistic update first
+    set((state) => {
+      const updated = state.notifications.map((n) =>
+        n.id === notifId ? { ...n, is_read: true } : n
+      );
+      return {
+        notifications: updated,
+        unreadCount: updated.filter((n) => !n.is_read).length,
+      };
+    });
     try {
       await pb.collection("ft_notifications").update(notifId, { is_read: true });
-      set((state) => ({
-        notifications: state.notifications.map((n) =>
-          n.id === notifId ? { ...n, is_read: true } : n
-        ),
-        unreadCount: Math.max(0, state.unreadCount - 1),
-      }));
     } catch (e) {
       console.warn("Mark read failed:", e);
     }
@@ -98,16 +136,17 @@ export const useNotifications = create((set, get) => ({
   // ─── MARK ALL READ ────────────────────────────────────────────────────────
   markAllRead: async () => {
     const unread = get().notifications.filter((n) => !n.is_read);
+    // Optimistic update
+    set((state) => ({
+      notifications: state.notifications.map((n) => ({ ...n, is_read: true })),
+      unreadCount: 0,
+    }));
     try {
       await Promise.all(
         unread.map((n) =>
           pb.collection("ft_notifications").update(n.id, { is_read: true })
         )
       );
-      set((state) => ({
-        notifications: state.notifications.map((n) => ({ ...n, is_read: true })),
-        unreadCount: 0,
-      }));
     } catch (e) {
       console.warn("Mark all read failed:", e);
     }
