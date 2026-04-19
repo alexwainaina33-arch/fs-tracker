@@ -20,6 +20,7 @@ import {
 const NAV_ADMIN = [
   { to: "/dashboard",         icon: LayoutDashboard, label: "Dashboard"      },
   { to: "/map",               icon: Map,             label: "Live Map"       },
+    { to: "/team-summary",      icon: Users,           label: "Team Summary"   },
   { to: "/tasks",             icon: CheckSquare,     label: "Tasks"          },
   { to: "/attendance",        icon: Clock,           label: "Attendance"     },
   { to: "/expenses",          icon: Receipt,         label: "Expenses"       },

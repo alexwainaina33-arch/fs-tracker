@@ -304,8 +304,59 @@ export default function AdvancedReportsPage() {
             <h2 className="font-display font-bold text-lg text-white">
               {REPORT_TYPES.find((r) => r.id === selectedReport)?.label}
             </h2>
-            <button onClick={() => shareViaWhatsApp(buildLeaderboardShareText(leaderboard, monthStr))}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#25D366]/15 border border-[#25D366]/30 text-[#25D366] text-xs font-medium">
+            <button onClick={() => {
+              let text = "";
+              const dateRange = `${format(start, "dd MMM yyyy")} – ${format(end, "dd MMM yyyy")}`;
+              if (selectedReport === "sales" || selectedReport === "leaderboard") {
+                text = buildLeaderboardShareText(leaderboard, monthStr);
+              } else if (selectedReport === "orders" && orderAgingStats) {
+                text = [
+                  `*Orders Report — ${dateRange}*`,
+                  `Total Orders: ${orderAgingStats.total}`,
+                  `Order Value: ${fmtKES(orderAgingStats.totalValue)}`,
+                  `Collected: ${fmtKES(orderAgingStats.totalPaid)}`,
+                  `Outstanding: ${fmtKES(orderAgingStats.totalBalance)}`,
+                  `Collection Rate: ${orderAgingStats.collRate}%`,
+                  `Pending Approval: ${fmtKES(orderAgingStats.totalPending)}`,
+                  ``,
+                  `_Sent via FieldTrack_`,
+                ].join("\n");
+              } else if (selectedReport === "farmer_visits" && visitStats) {
+                text = [
+                  `*Farmer Visits Report — ${dateRange}*`,
+                  `Total Visits: ${visitStats.total}`,
+                  `Converted (Purchased): ${visitStats.converted}`,
+                  `Counties Covered: ${visitStats.counties}`,
+                  `Acres Covered: ${visitStats.acres.toFixed(1)} ac`,
+                  ``,
+                  `_Sent via FieldTrack_`,
+                ].join("\n");
+              } else if (selectedReport === "attendance" && attStats) {
+                text = [
+                  `*Attendance Report — ${dateRange}*`,
+                  `Working Days Logged: ${attStats.totalDays}`,
+                  `Total Field Hours: ${attStats.totalHours.toFixed(1)}h`,
+                  `Average Hours/Day: ${attStats.avgHours.toFixed(1)}h`,
+                  ``,
+                  `_Sent via FieldTrack_`,
+                ].join("\n");
+              } else if (selectedReport === "expenses" && expStats) {
+                text = [
+                  `*Expenses Report — ${dateRange}*`,
+                  `Total Claims: ${expStats.total}`,
+                  `Approved: ${expStats.approved}`,
+                  `Total Amount: ${fmtKES(expStats.totalAmount)}`,
+                  `Approved Amount: ${fmtKES(expStats.approvedAmount)}`,
+                  `Approval Rate: ${expStats.total > 0 ? Math.round((expStats.approved / expStats.total) * 100) : 0}%`,
+                  ``,
+                  `_Sent via FieldTrack_`,
+                ].join("\n");
+              } else {
+                text = `FieldTrack Report — ${dateRange}\n\nNo data loaded yet. Generate the report first.`;
+              }
+              shareViaWhatsApp(text);
+            }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#25D366]/15 border border-[#25D366]/30 text-[#25D366] text-xs font-medium hover:bg-[#25D366]/25 transition-colors">
               <Share2 size={12} /> WhatsApp
             </button>
           </div>

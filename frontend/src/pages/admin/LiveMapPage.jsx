@@ -1,5 +1,5 @@
 // src/pages/admin/LiveMapPage.jsx
-// Live tracking map — staff sidebar, geofence overlay, route history playback
+// Live tracking map — mobile-responsive, attendance-bounded trail, stop detection, distance
 
 import React, { useEffect, useState, useMemo } from "react";
 import {
@@ -9,11 +9,12 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { pb } from "../../lib/pb";
 import { Badge } from "../../components/ui/Badge";
+import { haversineDistance } from "../../lib/geofence";
 import { format, differenceInMinutes, startOfDay, endOfDay } from "date-fns";
 import {
   Battery, Navigation, AlertTriangle, Users,
   MapPin, Clock, Zap, History, X, ChevronRight,
-  Shield, RefreshCcw,
+  Shield, RefreshCcw, Menu, Footprints, Timer,
 } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 
@@ -24,7 +25,6 @@ const COLORS = [
   "#ffd32a","#0be881","#f53b57","#3c40c4","#05c46b",
 ];
 
-// Assign a stable color per user
 const colorMap = {};
 let colorIdx = 0;
 function userColor(userId) {
@@ -37,11 +37,13 @@ function FitBounds({ positions }) {
   const map = useMap();
   useEffect(() => {
     if (!positions?.length) return;
-    if (positions.length === 1) {
-      map.flyTo([positions[0].latitude, positions[0].longitude], 13, { duration: 1 });
+    const valid = positions.filter(p => p.latitude && p.longitude && !(p.latitude === 0 && p.longitude === 0));
+    if (!valid.length) return;
+    if (valid.length === 1) {
+      map.flyTo([valid[0].latitude, valid[0].longitude], 13, { duration: 1 });
     } else {
       map.flyToBounds(
-        positions.map((p) => [p.latitude, p.longitude]),
+        valid.map(p => [p.latitude, p.longitude]),
         { padding: [50, 50], duration: 1 }
       );
     }
@@ -53,7 +55,7 @@ function FitBounds({ positions }) {
 function FocusOn({ lat, lng }) {
   const map = useMap();
   useEffect(() => {
-    if (lat && lng) map.flyTo([lat, lng], 15, { duration: 1 });
+    if (lat && lng && !(lat === 0 && lng === 0)) map.flyTo([lat, lng], 15, { duration: 1 });
   }, [lat, lng]);
   return null;
 }
@@ -66,10 +68,66 @@ function minsAgo(dateStr) {
   return `${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
 
+// ── Format duration ───────────────────────────────────────────────────────────
+function fmtDuration(minutes) {
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+// ── Detect stops ──────────────────────────────────────────────────────────────
+function detectStops(pings, radiusM = 100, minMinutes = 10) {
+  if (pings.length < 2) return [];
+  const stops = [];
+  let groupStart = 0;
+
+  for (let i = 1; i <= pings.length; i++) {
+    const isLast = i === pings.length;
+    const movedFar = !isLast && haversineDistance(
+      pings[groupStart].latitude, pings[groupStart].longitude,
+      pings[i].latitude,          pings[i].longitude,
+    ) > radiusM;
+
+    if (movedFar || isLast) {
+      const groupEnd = i - 1;
+      const startTime = new Date(pings[groupStart].recorded_at);
+      const endTime   = new Date(pings[groupEnd].recorded_at);
+      const durationMin = differenceInMinutes(endTime, startTime);
+
+      if (durationMin >= minMinutes) {
+        stops.push({
+          lat:         pings[groupStart].latitude,
+          lng:         pings[groupStart].longitude,
+          startTime,
+          endTime,
+          durationMin,
+          pingCount:   groupEnd - groupStart + 1,
+        });
+      }
+      groupStart = i;
+    }
+  }
+  return stops;
+}
+
+// ── Sum haversine distance across pings → km ──────────────────────────────────
+function calcTotalDistanceKm(pings) {
+  let total = 0;
+  for (let i = 1; i < pings.length; i++) {
+    total += haversineDistance(
+      pings[i - 1].latitude, pings[i - 1].longitude,
+      pings[i].latitude,     pings[i].longitude,
+    );
+  }
+  return (total / 1000).toFixed(1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function LiveMapPage() {
-  const [focusUser,    setFocusUser]    = useState(null); // userId to focus
-  const [historyUser,  setHistoryUser]  = useState(null); // userId for history
-  const [historyDate,  setHistoryDate]  = useState(format(new Date(), "yyyy-MM-dd"));
+  const [sidebarOpen,   setSidebarOpen]   = useState(false);
+  const [focusUser,     setFocusUser]     = useState(null);
+  const [historyUser,   setHistoryUser]   = useState(null);
+  const [historyDate,   setHistoryDate]   = useState(format(new Date(), "yyyy-MM-dd"));
   const [showGeofences, setShowGeofences] = useState(true);
 
   // ── Live locations (latest per staff, last 4h) ────────────────────────────
@@ -82,10 +140,10 @@ export default function LiveMapPage() {
         filter: `recorded_at >= "${since}"`,
         expand: "user",
       });
-      // Latest ping + trail per user
       const latest = {};
       const trails = {};
       for (const loc of list.items) {
+        if (loc.latitude === 0 && loc.longitude === 0) continue;
         if (!latest[loc.user]) { latest[loc.user] = loc; trails[loc.user] = []; }
         trails[loc.user].push([loc.latitude, loc.longitude]);
       }
@@ -95,30 +153,7 @@ export default function LiveMapPage() {
     staleTime: 0,
   });
 
-  // ── Route history for selected user/date ─────────────────────────────────
-  const { data: history, isFetching: histFetching } = useQuery({
-    queryKey: ["map-history", historyUser, historyDate],
-    queryFn: async () => {
-      if (!historyUser) return [];
-      const start = startOfDay(new Date(historyDate)).toISOString();
-      const end   = endOfDay(new Date(historyDate)).toISOString();
-      const list  = await pb.collection("ft_locations").getFullList({
-        filter: `user = "${historyUser}" && recorded_at >= "${start}" && recorded_at <= "${end}"`,
-        sort:   "recorded_at",
-      });
-      return list;
-    },
-    enabled: !!historyUser,
-  });
-
-  // ── Geofence zones ────────────────────────────────────────────────────────
-  const { data: zones } = useQuery({
-    queryKey: ["geofences"],
-    queryFn:  () => pb.collection("ft_geofences").getFullList({ filter: "is_active = true" }),
-    refetchInterval: 60000,
-  });
-
-  // ── All staff (for sidebar even if offline) ───────────────────────────────
+  // ── All staff ─────────────────────────────────────────────────────────────
   const { data: allStaff } = useQuery({
     queryKey: ["team-list"],
     queryFn:  () => pb.collection("ft_users").getFullList({
@@ -129,32 +164,123 @@ export default function LiveMapPage() {
     refetchInterval: 60000,
   });
 
+  // ── Geofence zones ────────────────────────────────────────────────────────
+  const { data: zones } = useQuery({
+    queryKey: ["geofences"],
+    queryFn:  () => pb.collection("ft_geofences").getFullList({ filter: "is_active = true" }),
+    refetchInterval: 60000,
+  });
+
+  // ── Attendance for history user+date ──────────────────────────────────────
+  const { data: histAttendance } = useQuery({
+    queryKey: ["map-hist-att", historyUser, historyDate],
+    queryFn: async () => {
+      if (!historyUser) return null;
+      return pb.collection("ft_attendance")
+        .getFirstListItem(`user = "${historyUser}" && date = "${historyDate}"`)
+        .catch(() => null);
+    },
+    enabled: !!historyUser,
+  });
+
+  // ── Route history — bounded by clock-in / clock-out ───────────────────────
+  const { data: history, isFetching: histFetching } = useQuery({
+    queryKey: ["map-history", historyUser, historyDate, histAttendance?.id],
+    queryFn: async () => {
+      if (!historyUser) return [];
+
+      let start, end;
+      if (histAttendance?.clock_in) {
+        start = histAttendance.clock_in;
+        end   = histAttendance.clock_out
+          ? histAttendance.clock_out
+          : new Date().toISOString().replace("T", " ");
+      } else {
+        start = startOfDay(new Date(historyDate)).toISOString().replace("T", " ");
+        end   = endOfDay(new Date(historyDate)).toISOString().replace("T", " ");
+      }
+
+      const list = await pb.collection("ft_locations").getFullList({
+        filter: `user = "${historyUser}" && recorded_at >= "${start}" && recorded_at <= "${end}"`,
+        sort:   "recorded_at",
+      });
+      return list.filter(p => !(p.latitude === 0 && p.longitude === 0));
+    },
+    enabled: !!historyUser,
+  });
+
+  // ── Derived ───────────────────────────────────────────────────────────────
+  const stops        = useMemo(() => history?.length ? detectStops(history) : [], [history]);
+  const totalDistKm  = useMemo(() => history?.length ? calcTotalDistanceKm(history) : "0.0", [history]);
+
   const positions  = locs?.latest ?? [];
   const now        = new Date();
-  const liveCount  = positions.filter((p) => differenceInMinutes(now, new Date(p.recorded_at)) <= STALE_MIN).length;
+  const liveCount  = positions.filter(p => differenceInMinutes(now, new Date(p.recorded_at)) <= STALE_MIN).length;
   const staleCount = positions.length - liveCount;
 
-  // Map of userId → latest loc for quick lookup
   const locByUser = useMemo(() => {
     const m = {};
     for (const p of positions) m[p.user] = p;
     return m;
   }, [positions]);
 
-  const focusedLoc = focusUser ? locByUser[focusUser] : null;
-  const historyStaffName = allStaff?.find((s) => s.id === historyUser)?.name ?? "";
+  const focusedLoc       = focusUser ? locByUser[focusUser] : null;
+  const historyStaffName = allStaff?.find(s => s.id === historyUser)?.name ?? "";
+  const stillOnField     = histAttendance?.clock_in && !histAttendance?.clock_out;
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const openHistory = (userId) => {
+    setHistoryUser(userId);
+    setSidebarOpen(false);  // always close staff sidebar when opening history
+  };
+
+  const openSidebar = () => {
+    setHistoryUser(null);   // close history panel when opening staff list
+    setSidebarOpen(true);
+  };
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full overflow-hidden relative">
 
-      {/* ── LEFT SIDEBAR ─────────────────────────────────────────────────── */}
-      <div className="w-64 flex-shrink-0 flex flex-col border-r border-[#21272f] bg-[#0a0d0f] overflow-hidden">
+      {/* ── MOBILE TOGGLE (staff list) ─────────────────────────────────────── */}
+      {!historyUser && (
+        <button
+          onClick={() => setSidebarOpen(v => !v)}
+          className="md:hidden absolute top-4 left-3 z-[500] w-10 h-10 bg-[#111418] border border-[#21272f] rounded-xl flex items-center justify-center text-[#8b95a1] hover:text-white shadow-lg"
+          title="Toggle staff list"
+        >
+          {sidebarOpen ? <X size={16} /> : <Menu size={16} />}
+        </button>
+      )}
 
-        {/* Sidebar header */}
+      {/* ── MOBILE BACKDROP (staff sidebar) ───────────────────────────────── */}
+      {sidebarOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* ── LEFT SIDEBAR — STAFF LIST ──────────────────────────────────────── */}
+      <div className={`
+        absolute inset-y-0 left-0 z-50 w-72 flex-shrink-0 flex flex-col
+        border-r border-[#21272f] bg-[#0a0d0f] overflow-hidden
+        transition-transform duration-300 ease-in-out
+        ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}
+        md:relative md:translate-x-0 md:w-64
+      `}>
+
+        {/* Header */}
         <div className="px-4 py-3 border-b border-[#21272f]">
           <div className="flex items-center gap-2 mb-2">
             <Users size={14} className="text-[#c8f230]" />
             <span className="text-xs font-semibold text-white uppercase tracking-wider">Field Staff</span>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="md:hidden ml-auto text-[#4a5568] hover:text-white p-1"
+            >
+              <X size={14} />
+            </button>
           </div>
           <div className="flex gap-3 text-xs">
             <span className="flex items-center gap-1">
@@ -171,17 +297,16 @@ export default function LiveMapPage() {
 
         {/* Staff list */}
         <div className="flex-1 overflow-y-auto py-2">
-          {allStaff?.map((staff) => {
+          {allStaff?.map(staff => {
             const loc     = locByUser[staff.id];
             const minAgo  = loc ? differenceInMinutes(now, new Date(loc.recorded_at)) : null;
             const isLive  = minAgo !== null && minAgo <= STALE_MIN;
-            const isStale = minAgo !== null && minAgo > STALE_MIN;
             const color   = userColor(staff.id);
             const isFocus = focusUser === staff.id;
 
             return (
               <div key={staff.id}
-                onClick={() => setFocusUser(isFocus ? null : staff.id)}
+                onClick={() => { setFocusUser(isFocus ? null : staff.id); setSidebarOpen(false); }}
                 className={`mx-2 mb-1 px-3 py-2.5 rounded-xl cursor-pointer transition-all border ${
                   isFocus
                     ? "border-[#c8f230]/40 bg-[#c8f230]/5"
@@ -189,7 +314,6 @@ export default function LiveMapPage() {
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  {/* Color dot */}
                   <div className="w-2.5 h-2.5 rounded-full flex-shrink-0"
                     style={{ backgroundColor: loc ? color : "#2a3040" }} />
                   <div className="flex-1 min-w-0">
@@ -202,17 +326,15 @@ export default function LiveMapPage() {
                       <p className="text-[10px] text-[#4a5568]">⚫ offline</p>
                     )}
                   </div>
-                  {/* History button */}
                   <button
-                    onClick={(e) => { e.stopPropagation(); setHistoryUser(staff.id); }}
-                    className="text-[#4a5568] hover:text-[#c8f230] p-0.5 transition-colors flex-shrink-0"
+                    onClick={e => { e.stopPropagation(); openHistory(staff.id); }}
+                    className="text-[#4a5568] hover:text-[#c8f230] p-1 transition-colors flex-shrink-0"
                     title="View route history"
                   >
                     <History size={12} />
                   </button>
                 </div>
 
-                {/* Mini stats if live */}
                 {loc && (
                   <div className="flex gap-3 mt-1 pl-4">
                     {loc.battery_level != null && (
@@ -240,7 +362,7 @@ export default function LiveMapPage() {
         {/* Controls */}
         <div className="px-4 py-3 border-t border-[#21272f] space-y-2">
           <button
-            onClick={() => setShowGeofences((v) => !v)}
+            onClick={() => setShowGeofences(v => !v)}
             className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-all border ${
               showGeofences
                 ? "bg-[#c8f230]/10 border-[#c8f230]/20 text-[#c8f230]"
@@ -258,10 +380,10 @@ export default function LiveMapPage() {
       </div>
 
       {/* ── MAP AREA ──────────────────────────────────────────────────────── */}
-      <div className="flex-1 relative flex flex-col">
+      <div className="flex-1 relative flex flex-col min-w-0">
 
         {/* Top bar */}
-        <div className="flex items-center gap-4 px-4 py-2.5 border-b border-[#21272f] bg-[#0a0d0f] flex-shrink-0 flex-wrap gap-y-1">
+        <div className="flex items-center gap-3 px-3 py-2 border-b border-[#21272f] bg-[#0a0d0f] flex-shrink-0 flex-wrap gap-y-1 pl-14 md:pl-4 min-h-[44px]">
           <div className="flex items-center gap-1.5 text-xs">
             <span className="w-2 h-2 rounded-full bg-[#00c096] animate-pulse" />
             <span className="text-[#00c096] font-medium">{liveCount} live</span>
@@ -274,31 +396,32 @@ export default function LiveMapPage() {
           {focusUser && (
             <div className="flex items-center gap-1.5 text-xs text-[#c8f230]">
               <MapPin size={11} />
-              Focused: <span className="font-medium">{allStaff?.find((s) => s.id === focusUser)?.name}</span>
-              <button onClick={() => setFocusUser(null)} className="text-[#4a5568] hover:text-white ml-1">
+              <span className="font-medium truncate max-w-[120px]">{allStaff?.find(s => s.id === focusUser)?.name}</span>
+              <button onClick={() => setFocusUser(null)} className="text-[#4a5568] hover:text-white ml-1 flex-shrink-0">
                 <X size={11} />
               </button>
             </div>
           )}
-          <span className="ml-auto text-[10px] text-[#4a5568] font-mono flex items-center gap-1">
-            <RefreshCcw size={10} /> auto-refresh 15s
+          <span className="ml-auto text-[10px] text-[#4a5568] font-mono flex items-center gap-1 flex-shrink-0">
+            <RefreshCcw size={10} /> 15s
           </span>
         </div>
 
         {/* Map */}
         <div className="flex-1 relative">
           <MapContainer center={KE_CENTER} zoom={7} className="h-full w-full">
-            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              attribution='&copy; <a href="https://www.openstreetmap.org">OpenStreetMap</a>' />
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution='&copy; <a href="https://www.openstreetmap.org">OpenStreetMap</a>'
+            />
 
-            {/* Auto-fit or focus */}
             {focusedLoc
               ? <FocusOn lat={focusedLoc.latitude} lng={focusedLoc.longitude} />
               : <FitBounds positions={positions} />
             }
 
             {/* Geofence zones */}
-            {showGeofences && zones?.map((z) =>
+            {showGeofences && zones?.map(z =>
               z.latitude && z.longitude ? (
                 <Circle key={z.id}
                   center={[z.latitude, z.longitude]}
@@ -314,8 +437,8 @@ export default function LiveMapPage() {
               ) : null
             )}
 
-            {/* Staff trails + markers */}
-            {positions.map((loc) => {
+            {/* Live staff trails + markers */}
+            {positions.map(loc => {
               const minAgo  = differenceInMinutes(now, new Date(loc.recorded_at));
               const stale   = minAgo > STALE_MIN;
               const trail   = locs?.trails?.[loc.user] ?? [];
@@ -325,21 +448,14 @@ export default function LiveMapPage() {
 
               return (
                 <React.Fragment key={loc.id}>
-                  {/* Trail polyline */}
                   {trail.length > 1 && (
                     <Polyline positions={trail}
                       pathOptions={{ color: color + "70", weight: focused ? 3 : 2, dashArray: "5 7" }} />
                   )}
-                  {/* Current position marker */}
                   <CircleMarker
                     center={[loc.latitude, loc.longitude]}
                     radius={focused ? 13 : stale ? 8 : 10}
-                    pathOptions={{
-                      color,
-                      fillColor: color,
-                      fillOpacity: 0.85,
-                      weight: focused ? 3 : 2,
-                    }}
+                    pathOptions={{ color, fillColor: color, fillOpacity: 0.85, weight: focused ? 3 : 2 }}
                   >
                     <Tooltip permanent direction="top" offset={[0, -10]}>
                       <span style={{ fontSize: 10, fontWeight: 600, color, background: "transparent", border: "none", whiteSpace: "nowrap" }}>
@@ -380,7 +496,7 @@ export default function LiveMapPage() {
                             Google Maps
                           </a>
                           <button
-                            onClick={() => { setHistoryUser(loc.user); setFocusUser(null); }}
+                            onClick={() => { openHistory(loc.user); setFocusUser(null); }}
                             className="flex-1 text-center text-xs text-[#8b95a1] hover:text-white border border-[#21272f] rounded px-2 py-1">
                             History
                           </button>
@@ -392,35 +508,54 @@ export default function LiveMapPage() {
               );
             })}
 
-            {/* Route history overlay */}
+            {/* ── HISTORY OVERLAY ────────────────────────────────────────── */}
             {historyUser && history?.length > 0 && (
               <>
                 <Polyline
-                  positions={history.map((h) => [h.latitude, h.longitude])}
+                  positions={history.map(h => [h.latitude, h.longitude])}
                   pathOptions={{ color: "#54a0ff", weight: 3, dashArray: "6 4" }}
                 />
-                {/* Start marker */}
-                <CircleMarker center={[history[0].latitude, history[0].longitude]} radius={8}
+                <CircleMarker center={[history[0].latitude, history[0].longitude]} radius={9}
                   pathOptions={{ color: "#00c096", fillColor: "#00c096", fillOpacity: 1, weight: 2 }}>
                   <Tooltip permanent direction="top" offset={[0, -10]}>
-                    <span style={{ fontSize: 10, color: "#00c096" }}>Start</span>
+                    <span style={{ fontSize: 10, color: "#00c096" }}>
+                      Clock-in {format(new Date(history[0].recorded_at), "HH:mm")}
+                    </span>
                   </Tooltip>
                 </CircleMarker>
-                {/* End marker */}
-                <CircleMarker
-                  center={[history[history.length - 1].latitude, history[history.length - 1].longitude]}
-                  radius={8}
-                  pathOptions={{ color: "#ff4d4f", fillColor: "#ff4d4f", fillOpacity: 1, weight: 2 }}>
-                  <Tooltip permanent direction="top" offset={[0, -10]}>
-                    <span style={{ fontSize: 10, color: "#ff4d4f" }}>Last</span>
-                  </Tooltip>
-                </CircleMarker>
+                {history.length > 1 && (
+                  <CircleMarker
+                    center={[history[history.length - 1].latitude, history[history.length - 1].longitude]}
+                    radius={9}
+                    pathOptions={{ color: "#ff4d4f", fillColor: "#ff4d4f", fillOpacity: 1, weight: 2 }}>
+                    <Tooltip permanent direction="top" offset={[0, -10]}>
+                      <span style={{ fontSize: 10, color: "#ff4d4f" }}>
+                        {histAttendance?.clock_out
+                          ? `Clock-out ${format(new Date(histAttendance.clock_out), "HH:mm")}`
+                          : "Last ping"}
+                      </span>
+                    </Tooltip>
+                  </CircleMarker>
+                )}
+                {stops.map((stop, i) => (
+                  <CircleMarker key={i}
+                    center={[stop.lat, stop.lng]}
+                    radius={6}
+                    pathOptions={{ color: "#ff9f43", fillColor: "#ff9f43", fillOpacity: 0.9, weight: 2 }}>
+                    <Tooltip direction="top" offset={[0, -8]}>
+                      <span style={{ fontSize: 10, color: "#ff9f43" }}>
+                        Stop #{i + 1} · {fmtDuration(stop.durationMin)}<br />
+                        {format(stop.startTime, "HH:mm")} – {format(stop.endTime, "HH:mm")}
+                      </span>
+                    </Tooltip>
+                  </CircleMarker>
+                ))}
               </>
             )}
           </MapContainer>
 
-          {/* Legend */}
-          <div className="absolute bottom-4 left-4 z-[400] bg-[#0a0d0f]/90 border border-[#21272f] rounded-xl px-4 py-3 space-y-1.5">
+          {/* Legend — desktop only */}
+          <div className="hidden md:block absolute bottom-4 left-4 z-[400] bg-[#0a0d0f]/90 border border-[#21272f] rounded-xl px-4 py-3 space-y-1.5">
             <p className="text-[10px] text-[#8b95a1] font-medium uppercase tracking-wider mb-2">Legend</p>
             <div className="flex items-center gap-2 text-xs text-[#c2cad4]">
               <div className="w-3 h-3 rounded-full bg-[#c8f230]" /> Active (&lt;10min)
@@ -431,6 +566,19 @@ export default function LiveMapPage() {
             <div className="flex items-center gap-2 text-xs text-[#c2cad4]">
               <div className="w-3 h-3 rounded-full bg-[#2a3040]" /> Offline
             </div>
+            {historyUser && (
+              <>
+                <div className="flex items-center gap-2 text-xs text-[#c2cad4]">
+                  <div className="w-3 h-3 rounded-full bg-[#00c096]" /> Clock-in
+                </div>
+                <div className="flex items-center gap-2 text-xs text-[#c2cad4]">
+                  <div className="w-3 h-3 rounded-full bg-[#ff4d4f]" /> Clock-out
+                </div>
+                <div className="flex items-center gap-2 text-xs text-[#c2cad4]">
+                  <div className="w-3 h-3 rounded-full bg-[#ff9f43]" /> Stop (10m+)
+                </div>
+              </>
+            )}
             {showGeofences && (
               <div className="flex items-center gap-2 text-xs text-[#c2cad4]">
                 <div className="w-3 h-3 rounded border border-[#c8f230] border-dashed" /> Geofence
@@ -442,82 +590,173 @@ export default function LiveMapPage() {
 
       {/* ── ROUTE HISTORY PANEL ───────────────────────────────────────────── */}
       {historyUser && (
-        <div className="w-64 flex-shrink-0 flex flex-col border-l border-[#21272f] bg-[#0a0d0f] overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-[#21272f]">
-            <div>
-              <p className="text-xs font-semibold text-white flex items-center gap-1.5">
-                <History size={12} className="text-[#c8f230]" /> Route History
-              </p>
-              <p className="text-[10px] text-[#8b95a1] mt-0.5">{historyStaffName}</p>
+        <>
+          {/* Mobile backdrop for history panel */}
+          <div
+            className="md:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+            onClick={() => setHistoryUser(null)}
+          />
+
+          <div className={`
+            fixed inset-x-0 bottom-0 z-50
+            flex flex-col
+            border-t border-[#21272f] bg-[#0a0d0f] overflow-hidden
+            rounded-t-2xl shadow-2xl
+            h-[75vh]
+            md:relative md:inset-auto md:h-full md:w-64 md:flex-shrink-0
+            md:border-t-0 md:border-l md:rounded-none md:shadow-none
+          `}>
+
+            {/* Mobile drag handle */}
+            <div className="flex justify-center pt-2.5 pb-1 md:hidden flex-shrink-0">
+              <div className="w-10 h-1 rounded-full bg-[#2d3748]" />
             </div>
-            <button onClick={() => setHistoryUser(null)} className="text-[#4a5568] hover:text-white">
-              <X size={14} />
-            </button>
-          </div>
 
-          {/* Date picker */}
-          <div className="px-4 py-3 border-b border-[#21272f]">
-            <label className="text-[10px] text-[#8b95a1] uppercase tracking-wider block mb-1">Date</label>
-            <input
-              type="date"
-              value={historyDate}
-              max={format(new Date(), "yyyy-MM-dd")}
-              onChange={(e) => setHistoryDate(e.target.value)}
-              className="w-full bg-[#111418] border border-[#21272f] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#c8f230]"
-            />
-          </div>
-
-          {/* Stats */}
-          {history && history.length > 0 && (
-            <div className="px-4 py-3 border-b border-[#21272f] space-y-2">
-              <div className="flex justify-between text-xs">
-                <span className="text-[#8b95a1]">Pings</span>
-                <span className="text-white font-mono">{history.length}</span>
+            {/* Panel header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#21272f] flex-shrink-0">
+              <div>
+                <p className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <History size={12} className="text-[#c8f230]" /> Route History
+                </p>
+                <p className="text-[10px] text-[#8b95a1] mt-0.5 truncate max-w-[160px]">{historyStaffName}</p>
               </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-[#8b95a1]">First seen</span>
-                <span className="text-white font-mono">{format(new Date(history[0].recorded_at), "HH:mm")}</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-[#8b95a1]">Last seen</span>
-                <span className="text-white font-mono">{format(new Date(history[history.length - 1].recorded_at), "HH:mm")}</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-[#8b95a1]">Max speed</span>
-                <span className="text-white font-mono">
-                  {Math.max(...history.map((h) => h.speed_kmh ?? 0))} km/h
-                </span>
-              </div>
+              <button
+                onClick={() => setHistoryUser(null)}
+                className="text-[#4a5568] hover:text-white p-1 rounded-lg hover:bg-[#21272f] transition-colors"
+              >
+                <X size={14} />
+              </button>
             </div>
-          )}
 
-          {/* Ping list */}
-          <div className="flex-1 overflow-y-auto py-2">
-            {histFetching && (
-              <p className="text-xs text-[#4a5568] text-center py-6">Loading…</p>
-            )}
-            {!histFetching && history?.length === 0 && (
-              <p className="text-xs text-[#4a5568] text-center py-6">No data for this date</p>
-            )}
-            {history?.map((h, i) => (
-              <div key={h.id} className="px-4 py-2 border-b border-[#21272f]/50 hover:bg-[#111418] transition-colors">
-                <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${i === 0 ? "bg-[#00c096]" : i === history.length - 1 ? "bg-[#ff4d4f]" : "bg-[#21272f]"}`} />
-                  <span className="text-[10px] font-mono text-white">{format(new Date(h.recorded_at), "HH:mm:ss")}</span>
+            {/* Date picker */}
+            <div className="px-4 py-3 border-b border-[#21272f] flex-shrink-0">
+              <label className="text-[10px] text-[#8b95a1] uppercase tracking-wider block mb-1">Date</label>
+              <input
+                type="date"
+                value={historyDate}
+                max={format(new Date(), "yyyy-MM-dd")}
+                onChange={e => setHistoryDate(e.target.value)}
+                className="w-full bg-[#111418] border border-[#21272f] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#c8f230]"
+              />
+            </div>
+
+            {/* Attendance status */}
+            <div className="px-4 py-2 border-b border-[#21272f] flex-shrink-0">
+              {histAttendance ? (
+                <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-xl ${
+                  stillOnField
+                    ? "bg-[#00c096]/10 text-[#00c096] border border-[#00c096]/20"
+                    : "bg-[#21272f] text-[#8b95a1]"
+                }`}>
+                  <Clock size={11} className="flex-shrink-0" />
+                  <span className="truncate">
+                    {format(new Date(histAttendance.clock_in), "HH:mm")}
+                    {histAttendance.clock_out
+                      ? ` → ${format(new Date(histAttendance.clock_out), "HH:mm")}`
+                      : " → now (active)"}
+                  </span>
+                  <Badge
+                    label={histAttendance.status}
+                    color={histAttendance.status === "late" ? "warn" : "ok"}
+                    size="xs"
+                  />
                 </div>
-                <div className="pl-4 mt-0.5 flex gap-3">
-                  <span className="text-[9px] text-[#4a5568] font-mono">{h.latitude.toFixed(4)}, {h.longitude.toFixed(4)}</span>
+              ) : histFetching ? (
+                <p className="text-[10px] text-[#4a5568]">Checking attendance…</p>
+              ) : (
+                <p className="text-[10px] text-[#ff9f43] flex items-center gap-1">
+                  <AlertTriangle size={10} /> No clock-in record — showing full day
+                </p>
+              )}
+            </div>
+
+            {/* Stats grid */}
+            {history && history.length > 0 && (
+              <div className="px-4 py-3 border-b border-[#21272f] grid grid-cols-4 md:grid-cols-2 gap-2 flex-shrink-0">
+                <div className="bg-[#111418] rounded-xl p-2 text-center">
+                  <p className="text-[9px] text-[#8b95a1]">Distance</p>
+                  <p className="text-xs font-bold text-[#c8f230]">{totalDistKm}km</p>
                 </div>
-                {(h.speed_kmh > 0 || h.battery_level) && (
-                  <div className="pl-4 flex gap-2 mt-0.5">
-                    {h.speed_kmh > 0 && <span className="text-[9px] text-[#4a5568]">🚗 {h.speed_kmh}km/h</span>}
-                    {h.battery_level && <span className="text-[9px] text-[#4a5568]">🔋 {h.battery_level}%</span>}
+                <div className="bg-[#111418] rounded-xl p-2 text-center">
+                  <p className="text-[9px] text-[#8b95a1]">Stops</p>
+                  <p className="text-xs font-bold text-[#ff9f43]">{stops.length}</p>
+                </div>
+                <div className="bg-[#111418] rounded-xl p-2 text-center">
+                  <p className="text-[9px] text-[#8b95a1]">Pings</p>
+                  <p className="text-xs font-bold text-white font-mono">{history.length}</p>
+                </div>
+                <div className="bg-[#111418] rounded-xl p-2 text-center">
+                  <p className="text-[9px] text-[#8b95a1]">Max spd</p>
+                  <p className="text-xs font-bold text-white font-mono">
+                    {Math.max(...history.map(h => h.speed_kmh ?? 0))}km/h
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Stops summary */}
+            {stops.length > 0 && (
+              <div className="px-4 py-2 border-b border-[#21272f] flex-shrink-0">
+                <p className="text-[10px] text-[#ff9f43] font-semibold uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                  <Timer size={10} /> Stops detected
+                </p>
+                <div className="space-y-0.5">
+                  {stops.map((stop, i) => (
+                    <div key={i} className="flex items-center justify-between py-0.5 text-[10px]">
+                      <span className="text-[#8b95a1]">
+                        #{i + 1} · {format(stop.startTime, "HH:mm")}–{format(stop.endTime, "HH:mm")}
+                      </span>
+                      <span className="text-[#ff9f43] font-mono font-semibold">{fmtDuration(stop.durationMin)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Ping timeline */}
+            <div className="flex-1 overflow-y-auto py-2 min-h-0">
+              {histFetching && (
+                <p className="text-xs text-[#4a5568] text-center py-6">Loading…</p>
+              )}
+              {!histFetching && history?.length === 0 && (
+                <p className="text-xs text-[#4a5568] text-center py-6">No GPS data for this date</p>
+              )}
+              {history?.map((h, i) => {
+                const isStop = stops.some(s =>
+                  Math.abs(differenceInMinutes(new Date(h.recorded_at), s.startTime)) < 2
+                );
+                return (
+                  <div key={h.id}
+                    className={`px-4 py-2 border-b border-[#21272f]/50 hover:bg-[#111418] transition-colors ${isStop ? "bg-[#ff9f43]/5" : ""}`}>
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        i === 0               ? "bg-[#00c096]"
+                        : i === history.length - 1 ? "bg-[#ff4d4f]"
+                        : isStop              ? "bg-[#ff9f43]"
+                        : "bg-[#21272f]"
+                      }`} />
+                      <span className="text-[10px] font-mono text-white">
+                        {format(new Date(h.recorded_at), "HH:mm:ss")}
+                      </span>
+                      {isStop && <span className="text-[9px] text-[#ff9f43]">stop</span>}
+                    </div>
+                    <div className="pl-4 mt-0.5 flex gap-3">
+                      <span className="text-[9px] text-[#4a5568] font-mono">
+                        {h.latitude.toFixed(4)}, {h.longitude.toFixed(4)}
+                      </span>
+                    </div>
+                    {(h.speed_kmh > 0 || h.battery_level) && (
+                      <div className="pl-4 flex gap-2 mt-0.5">
+                        {h.speed_kmh > 0 && <span className="text-[9px] text-[#4a5568]">🚗 {h.speed_kmh}km/h</span>}
+                        {h.battery_level && <span className="text-[9px] text-[#4a5568]">🔋 {h.battery_level}%</span>}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
+                );
+              })}
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
