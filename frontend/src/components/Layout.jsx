@@ -1,6 +1,4 @@
 // src/components/Layout.jsx
-// Main app shell — includes PWAManager for install prompt + update detection
-
 import React, { useState, useEffect } from "react";
 import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../store/auth";
@@ -49,16 +47,14 @@ const NAV_FIELD = [
 ];
 
 export default function Layout() {
-  const { user, logout }                        = useAuth();
-  const { tracking, position, start, stop }     = useGPS();
-  const { theme, toggle, init }                 = useTheme();
-  const navigate                                = useNavigate();
-  const location                                = useLocation();
-  const [open, setOpen]                         = useState(false);
+  const { user, logout }                    = useAuth();
+  const { tracking, position, start, stop } = useGPS();
+  const { theme, toggle, init }             = useTheme();
+  const navigate                            = useNavigate();
+  const location                            = useLocation();
+  const [open, setOpen]                     = useState(false);
 
   useEffect(() => { init(); }, []);
-
-  // ── Real-time sync — subscribes to all collections, updates instantly ──────
   useRealtimeSync();
 
   const isAdmin   = ["admin","manager","supervisor"].includes(user?.role);
@@ -67,7 +63,6 @@ export default function Layout() {
   const isLight   = theme === "light";
   const isMapPage = location.pathname === "/map";
 
-  // ── Theme classes ───────────────────────────────────────────────────────────
   const sidebarBg    = isLight ? "bg-white border-[#e4e4e7]"   : "bg-[#0a0d0f] border-[#21272f]";
   const headerBg     = isLight ? "bg-white border-[#e4e4e7]"   : "bg-[#0a0d0f] border-[#21272f]";
   const logoText     = isLight ? "text-[#18181b]"               : "text-white";
@@ -88,11 +83,9 @@ export default function Layout() {
   return (
     <div className={`flex h-full overflow-hidden ${isLight ? "bg-[#f4f4f5]" : "bg-[#0a0d0f]"}`}>
       <OfflineBanner />
-
-      {/* ── PWA: install prompt + update banner ── */}
       <PWAManager />
 
-      {/* ── SIDEBAR ──────────────────────────────────────────────────────── */}
+      {/* ── SIDEBAR ── */}
       <aside className={`
         fixed inset-y-0 left-0 z-[700] w-56 flex flex-col border-r
         transition-transform duration-300 ease-out
@@ -143,14 +136,20 @@ export default function Layout() {
         {/* User footer */}
         <div className={`px-3 py-3 border-t ${dividerColor}`}>
           <div className="flex items-center gap-3 px-3 py-2">
-            <div className={`w-8 h-8 rounded-full border flex items-center justify-center text-sm font-bold flex-shrink-0 ${avatarBg}`}>
+            <button onClick={() => { navigate("/profile"); setOpen(false); }}
+              title="My profile"
+              className={`w-8 h-8 rounded-full border flex items-center justify-center text-sm font-bold flex-shrink-0 transition-opacity hover:opacity-75 ${avatarBg}`}>
               {user?.name?.[0]?.toUpperCase() ?? "?"}
-            </div>
+            </button>
             <div className="flex-1 min-w-0">
-              <p className={`text-xs font-medium truncate ${userNameCls}`}>{user?.name}</p>
+              <button onClick={() => { navigate("/profile"); setOpen(false); }}
+                className={`text-xs font-medium truncate block hover:underline text-left w-full ${userNameCls}`}>
+                {user?.name}
+              </button>
               <p className={`text-[10px] capitalize ${subText}`}>{user?.role?.replace("_"," ")}</p>
             </div>
-            <button onClick={() => { logout(); navigate("/login"); }} title="Logout" className={`transition-colors ${logoutCls}`}>
+            <button onClick={() => { logout(); navigate("/login"); }} title="Logout"
+              className={`transition-colors ${logoutCls}`}>
               <LogOut size={15} />
             </button>
           </div>
@@ -160,10 +159,8 @@ export default function Layout() {
       {/* Backdrop */}
       {open && <div onClick={() => setOpen(false)} className="fixed inset-0 z-[650] bg-black/60 lg:hidden" />}
 
-      {/* ── MAIN CONTENT ──────────────────────────────────────────────────── */}
+      {/* ── MAIN CONTENT ── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-
-        {/* Header — z-[600] keeps it above Leaflet map (which uses up to z-500) */}
         <header className={`flex items-center gap-3 px-4 h-16 border-b flex-shrink-0 relative z-[600] ${headerBg}`}>
           <button onClick={() => setOpen(true)} className={`lg:hidden p-1.5 ${menuBtnCls}`}>
             <Menu size={20} />
@@ -184,13 +181,19 @@ export default function Layout() {
             {isLight ? <Moon size={16} /> : <Sun size={16} />}
           </button>
           <NotificationBell />
+          {/* ── Profile avatar ── */}
+          <button
+            onClick={() => navigate("/profile")}
+            title="My profile"
+            className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 transition-opacity hover:opacity-75"
+            style={{ background: isLight ? "#f0ffd0" : "rgba(200,242,48,0.15)", border: `1px solid ${isLight ? "rgba(200,242,48,0.5)" : "rgba(200,242,48,0.3)"}`, color: isLight ? "#4a6000" : "#c8f230" }}>
+            {user?.name?.[0]?.toUpperCase() ?? "?"}
+          </button>
         </header>
 
-        {/* main — overflow-hidden on map page so Leaflet doesn't escape its container */}
         <main className={`flex-1 ${isMapPage ? "overflow-hidden" : "overflow-y-auto"}`}>
           <Outlet />
         </main>
-
       </div>
     </div>
   );

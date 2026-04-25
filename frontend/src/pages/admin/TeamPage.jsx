@@ -6,7 +6,8 @@ import { Modal } from "../../components/ui/Modal";
 import { Btn } from "../../components/ui/Btn";
 import { Badge } from "../../components/ui/Badge";
 import { Input, Select } from "../../components/ui/Input";
-import { Plus, Search, Users } from "lucide-react";
+import ChangePasswordModal from "../../components/ChangePasswordModal";
+import { Plus, Search, Users, KeyRound } from "lucide-react";
 import toast from "react-hot-toast";
 
 const ROLES    = ["field_staff","supervisor","manager","admin"];
@@ -17,8 +18,9 @@ const COUNTIES = ["Nairobi","Mombasa","Kisumu","Nakuru","Eldoret","Thika","Malin
 export default function TeamPage() {
   const { user } = useAuth();
   const qc = useQueryClient();
-  const [search,     setSearch]     = useState("");
-  const [showCreate, setShowCreate] = useState(false);
+  const [search,      setSearch]      = useState("");
+  const [showCreate,  setShowCreate]  = useState(false);
+  const [resetTarget, setResetTarget] = useState(null); // { id, name, email }
 
   const blank = { name:"", email:"", password:"", employee_id:"", phone:"", phoneCode:"+254", role:"field_staff", county:"", department:"" };
   const [form, setForm] = useState(blank);
@@ -55,7 +57,9 @@ export default function TeamPage() {
     <div className="p-5 max-w-5xl mx-auto space-y-5 pb-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-bold text-2xl text-white flex items-center gap-2"><Users size={20} className="text-[#c8f230]" /> Team</h1>
+          <h1 className="font-display font-bold text-2xl text-white flex items-center gap-2">
+            <Users size={20} className="text-[#c8f230]" /> Team
+          </h1>
           <p className="text-[#8b95a1] text-sm">{data?.totalItems ?? 0} members</p>
         </div>
         <Btn onClick={() => setShowCreate(true)}><Plus size={16} /> Add Member</Btn>
@@ -72,7 +76,7 @@ export default function TeamPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[#21272f] text-[#8b95a1] text-xs uppercase tracking-wider">
-                {["Name","Role","County","Phone","Status","Action"].map(h => (
+                {["Name","Role","County","Phone","Status","Status Action","Password"].map(h => (
                   <th key={h} className="px-5 py-3 text-left font-medium">{h}</th>
                 ))}
               </tr>
@@ -91,10 +95,14 @@ export default function TeamPage() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-5 py-4"><Badge label={m.role || "field_staff"} color={m.role === "admin" ? "lime" : m.role === "manager" ? "warn" : "default"} /></td>
+                  <td className="px-5 py-4">
+                    <Badge label={m.role || "field_staff"} color={m.role === "admin" ? "lime" : m.role === "manager" ? "warn" : "default"} />
+                  </td>
                   <td className="px-5 py-4 text-[#8b95a1]">{m.county || "—"}</td>
                   <td className="px-5 py-4 font-mono text-xs text-[#8b95a1]">{m.phone || "—"}</td>
-                  <td className="px-5 py-4"><Badge label={m.status || "active"} color={m.status === "active" ? "ok" : m.status === "suspended" ? "danger" : "default"} /></td>
+                  <td className="px-5 py-4">
+                    <Badge label={m.status || "active"} color={m.status === "active" ? "ok" : m.status === "suspended" ? "danger" : "default"} />
+                  </td>
                   <td className="px-5 py-4">
                     {m.id !== user.id && (
                       <select value={m.status || "active"} onChange={e => updateStatus.mutate({ id: m.id, status: e.target.value })}
@@ -103,14 +111,27 @@ export default function TeamPage() {
                       </select>
                     )}
                   </td>
+                  {/* ── Reset Password column ── */}
+                  <td className="px-5 py-4">
+                    <button
+                      onClick={() => setResetTarget({ id: m.id, name: m.name, email: m.email })}
+                      title="Reset password"
+                      className="inline-flex items-center gap-1.5 text-xs text-[#8b95a1] hover:text-[#c8f230] border border-[#21272f] hover:border-[#c8f230]/40 rounded-lg px-2.5 py-1.5 transition-colors"
+                    >
+                      <KeyRound size={13} /> Reset
+                    </button>
+                  </td>
                 </tr>
               ))}
-              {!data?.items.length && <tr><td colSpan={6} className="px-5 py-12 text-center text-[#8b95a1]">No team members yet</td></tr>}
+              {!data?.items.length && (
+                <tr><td colSpan={7} className="px-5 py-12 text-center text-[#8b95a1]">No team members yet</td></tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
+      {/* ── Add Member Modal ── */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Add Team Member" width="max-w-lg">
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
@@ -148,6 +169,13 @@ export default function TeamPage() {
           </Btn>
         </div>
       </Modal>
+
+      {/* ── Admin Reset Password Modal ── */}
+      <ChangePasswordModal
+        open={!!resetTarget}
+        onClose={() => setResetTarget(null)}
+        targetUser={resetTarget}
+      />
     </div>
   );
 }
