@@ -3,7 +3,7 @@
 
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { pb } from "../lib/pb";
+import { pb, API } from "../lib/pb";
 import { useAuth } from "../store/auth";
 import { useGPS } from "../hooks/useGPS";
 import { isOnline, enqueueFarmerVisit } from "../lib/offlineQueue";
@@ -424,6 +424,25 @@ export default function FarmerVisitsPage() {
             )}
             {selected.products_sold && <div><p className="text-[#8b95a1] text-xs">Products Sold</p><p className="text-[#c2cad4]">{selected.products_sold}</p></div>}
             {selected.notes && <div><p className="text-[#8b95a1] text-xs">Notes</p><p className="text-[#c2cad4]">{selected.notes}</p></div>}
+
+            {/* Photos gallery */}
+            {selected.photos?.length > 0 && (
+              <div>
+                <p className="text-[#8b95a1] text-xs mb-2">Farm Photos</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {(Array.isArray(selected.photos) ? selected.photos : [selected.photos]).map((photo, i) => (
+                    <a key={i} href={`${API}/api/files/ft_farmer_visits/${selected.id}/${photo}`} target="_blank" rel="noreferrer">
+                      <img
+                        src={`${API}/api/files/ft_farmer_visits/${selected.id}/${photo}?thumb=400x400`}
+                        alt={`Farm photo ${i + 1}`}
+                        className="w-full h-32 object-cover rounded-xl border border-[#21272f] hover:opacity-80 transition-opacity"
+                        onError={(e) => { e.target.style.display = "none"; }}
+                      />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <div className="pt-4 border-t border-[#21272f] mt-4">
             <Btn variant="ghost" onClick={() => setSelected(null)} className="w-full">Close</Btn>
