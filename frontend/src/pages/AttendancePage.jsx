@@ -3,7 +3,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { pb, fileUrl } from "../lib/pb";
+import { pb, fileUrl, API } from "../lib/pb";
 import { useAuth } from "../store/auth";
 import { isOnline, enqueueAttendanceClockIn, enqueueAttendanceClockOut } from "../lib/offlineQueue";
 import CameraCapture from "../components/CameraCapture";
@@ -208,7 +208,12 @@ export default function AttendancePage() {
           {/* Selfie avatar */}
           <div className="w-24 h-24 rounded-2xl bg-[#0a0d0f] border border-[#21272f] flex items-center justify-center flex-shrink-0 overflow-hidden">
             {mine?.clock_in_selfie
-              ? <img src={fileUrl(mine, mine.clock_in_selfie, "200x200")} alt="selfie" className="w-full h-full object-cover" />
+              ? <img
+                  src={`${API}/api/files/ft_attendance/${mine.id}/${mine.clock_in_selfie}?thumb=200x200`}
+                  alt="selfie"
+                  className="w-full h-full object-cover"
+                  onError={(e) => { e.target.style.display = "none"; }}
+                />
               : <Camera size={28} className="text-[#21272f]" />}
           </div>
 
