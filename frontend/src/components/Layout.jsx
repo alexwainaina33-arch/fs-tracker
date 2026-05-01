@@ -13,7 +13,7 @@ import {
   FileText, Users, LogOut, Menu, X,
   Navigation, AlertOctagon, Shield,
   ShoppingCart, CheckCircle, Trophy, Target,
-  Sprout, BarChart2, Sun, Moon, CreditCard,
+  Sprout, BarChart2, Sun, Moon, CreditCard, Images,
 } from "lucide-react";
 
 const NAV_ADMIN = [
@@ -24,13 +24,14 @@ const NAV_ADMIN = [
   { to: "/attendance",        icon: Clock,           label: "Attendance"     },
   { to: "/expenses",          icon: Receipt,         label: "Expenses"       },
   { to: "/orders",            icon: ShoppingCart,    label: "Orders"         },
-  { to: "/farmer-visits",     icon: Sprout,          label: "Farmer Visits"  },
+  { to: "/farmer-visits",     icon: Sprout,          label: "Field Visits"   },
   { to: "/approvals",         icon: CheckCircle,     label: "Approvals"      },
   { to: "/payment-approvals", icon: CreditCard,      label: "Pmnt Approvals" },
   { to: "/targets",           icon: Target,          label: "Targets"        },
   { to: "/leaderboard",       icon: Trophy,          label: "Leaderboard"    },
   { to: "/reports",           icon: FileText,        label: "Reports"        },
   { to: "/advanced-reports",  icon: BarChart2,       label: "Adv. Reports"   },
+  { to: "/gallery",           icon: Images,          label: "Gallery"        },
   { to: "/team",              icon: Users,           label: "Team"           },
   { to: "/geofences",         icon: Shield,          label: "Geofences"      },
 ];
@@ -41,9 +42,10 @@ const NAV_FIELD = [
   { to: "/attendance",    icon: Clock,           label: "Attendance"    },
   { to: "/expenses",      icon: Receipt,         label: "Expenses"      },
   { to: "/orders",        icon: ShoppingCart,    label: "Orders"        },
-  { to: "/farmer-visits", icon: Sprout,          label: "Farmer Visits" },
+  { to: "/farmer-visits", icon: Sprout,          label: "Field Visits"  },
   { to: "/leaderboard",   icon: Trophy,          label: "Leaderboard"   },
   { to: "/reports",       icon: FileText,        label: "Reports"       },
+  { to: "/gallery",       icon: Images,          label: "Gallery"       },
 ];
 
 export default function Layout() {

@@ -1,56 +1,54 @@
 // src/hooks/useRealtimeSync.js
-// Advanced realtime sync — SSE subscriptions with:
-// • Heartbeat monitoring (detects silent drops)
-// • Exponential backoff reconnection
-// • Optimistic cache patching (instant UI updates)
-// • Per-collection independent retry
-// • Reconnects on tab focus, online, auth change, SSE drop
+// Battery-optimised realtime sync:
+// • Pauses SSE when tab is hidden (phone screen off / other app)
+// • Only invalidates the specific query that changed — not everything
+// • Longer heartbeat interval
+// • Unsubscribes ft_locations (high-frequency, not needed in UI)
 
 import { useEffect, useRef, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { pb } from "../lib/pb";
 
-// Collection → React Query keys to invalidate + refetch on any change
+// ── Collections to subscribe to ───────────────────────────────────────────────
+// ft_locations removed — it fires every 60s per user and is map-only.
+// The LiveMapPage subscribes to it directly when open.
 const COLLECTION_KEY_MAP = {
-  ft_orders:          [["orders"], ["dash-recent-orders"], ["dash-pending-orders"], ["order-summary"]],
-  ft_order_payments:  [["payments"], ["dash-pending-payments"], ["dash-coll-rate"], ["order-payments"]],
-  ft_order_targets:   [["targets"], ["leaderboard"], ["my-target"]],
-  ft_attendance:      [["attendance"], ["dash-att"], ["my-att-dash"], ["team-att"]],
-  ft_locations:       [["map-locs"], ["dash-live-locs"], ["map-history"]],
+  ft_orders:          [["orders"], ["dash-recent-orders"], ["dash-pending-orders"]],
+  ft_order_payments:  [["payments"], ["dash-pending-payments"]],
+  ft_order_targets:   [["targets"], ["leaderboard"]],
+  ft_attendance:      [["attendance"], ["dash-att"]],
   ft_tasks:           [["tasks"], ["my-tasks-dash"]],
   ft_expenses:        [["expenses"], ["dash-pending-exp"]],
-  ft_farmer_visits:   [["farmer-visits"], ["dash-visits-today"], ["my-visits-today"]],
+  ft_farmer_visits:   [["farmer-visits"]],
   ft_notifications:   [["notifications"]],
   ft_sos_alerts:      [["sos-alerts"]],
-  ft_geofences:       [["geofences"]],
-  ft_geofence_events: [["geofence-events"]],
-  ft_users:           [["team-list"], ["staff-map"], ["dash-active-staff"]],
-  ft_mileage:         [["mileage"]],
-  ft_reports:         [["reports"]],
+  ft_users:           [["team-list"]],
 };
 
-const MAX_BACKOFF_MS  = 30000; // max 30s between reconnect attempts
-const HEARTBEAT_MS    = 30000; // check SSE health every 30s
+const MAX_BACKOFF_MS = 30_000;
+const HEARTBEAT_MS   = 60_000; // was 30s — doubled to halve check frequency
 
 export function useRealtimeSync() {
-  const qc              = useQueryClient();
-  const subsRef         = useRef({});       // collection → true/false
-  const reconnecting    = useRef(false);
-  const reconnTimer     = useRef(null);
-  const heartbeatTimer  = useRef(null);
-  const backoffRef      = useRef(1000);     // current backoff delay
-  const lastEventRef    = useRef(Date.now()); // timestamp of last SSE event
+  const qc             = useQueryClient();
+  const subsRef        = useRef({});
+  const reconnecting   = useRef(false);
+  const reconnTimer    = useRef(null);
+  const heartbeatTimer = useRef(null);
+  const backoffRef     = useRef(1000);
+  const lastEventRef   = useRef(Date.now());
+  const pausedRef      = useRef(false); // true when tab hidden
 
-  // ── Invalidate + refetch all keys for a collection ────────────────────────
+  // ── Invalidate only the specific keys for this collection ─────────────────
   const flushKeys = useCallback((queryKeys) => {
     for (const key of queryKeys) {
       qc.invalidateQueries({ queryKey: key, exact: false });
-      qc.refetchQueries({   queryKey: key, exact: false });
     }
+    // Note: removed refetchQueries — invalidate is enough; React Query
+    // will refetch automatically when the component is visible/mounted.
+    // This halves the number of network requests on each SSE event.
   }, [qc]);
 
-  // ── Optimistically patch the React Query cache with the incoming record ────
-  // This makes the UI update BEFORE the refetch completes
+  // ── Optimistically patch cache ─────────────────────────────────────────────
   const patchCache = useCallback((collection, event) => {
     const { action, record } = event;
     if (!record?.id) return;
@@ -60,14 +58,10 @@ export function useRealtimeSync() {
       qc.setQueriesData({ queryKey: key, exact: false }, (oldData) => {
         if (!oldData) return oldData;
 
-        // PocketBase list response shape: { items: [...], totalItems, ... }
         if (oldData?.items) {
           let items = [...(oldData.items ?? [])];
           if (action === "create") {
-            // Add to front if not already present
-            if (!items.find(r => r.id === record.id)) {
-              items = [record, ...items];
-            }
+            if (!items.find(r => r.id === record.id)) items = [record, ...items];
           } else if (action === "update") {
             items = items.map(r => r.id === record.id ? { ...r, ...record } : r);
           } else if (action === "delete") {
@@ -76,12 +70,9 @@ export function useRealtimeSync() {
           return { ...oldData, items, totalItems: items.length };
         }
 
-        // Array shape (getFullList)
         if (Array.isArray(oldData)) {
           if (action === "create") {
-            return oldData.find(r => r.id === record.id)
-              ? oldData
-              : [record, ...oldData];
+            return oldData.find(r => r.id === record.id) ? oldData : [record, ...oldData];
           } else if (action === "update") {
             return oldData.map(r => r.id === record.id ? { ...r, ...record } : r);
           } else if (action === "delete") {
@@ -97,74 +88,53 @@ export function useRealtimeSync() {
   // ── Subscribe to one collection ───────────────────────────────────────────
   const subscribeOne = useCallback(async (collection, queryKeys) => {
     if (subsRef.current[collection] === true) return;
-
     try {
       await pb.collection(collection).subscribe("*", (e) => {
-        lastEventRef.current = Date.now(); // record activity for heartbeat
-        backoffRef.current   = 1000;       // reset backoff on successful event
-
-        console.debug(`[Realtime] ${collection} → ${e.action} ${e.record?.id ?? ""}`);
-
-        // 1. Optimistically patch cache immediately (instant UI)
+        if (pausedRef.current) return; // tab hidden — drop event, don't process
+        lastEventRef.current = Date.now();
+        backoffRef.current   = 1000;
         patchCache(collection, e);
-
-        // 2. Then refetch from server to get full expanded data
         flushKeys(queryKeys);
       });
-
       subsRef.current[collection] = true;
     } catch (err) {
-      console.warn(`[Realtime] ❌ Failed to subscribe to ${collection}:`, err);
+      console.warn(`[Realtime] ❌ ${collection}:`, err?.message);
       subsRef.current[collection] = false;
     }
   }, [patchCache, flushKeys]);
 
-  // ── Subscribe to all collections ─────────────────────────────────────────
+  // ── Subscribe to all collections ──────────────────────────────────────────
   const subscribeAll = useCallback(async () => {
-    if (reconnecting.current) return;
-    if (!pb.authStore.isValid) return;
-
+    if (reconnecting.current || !pb.authStore.isValid) return;
     reconnecting.current = true;
-    console.log("[Realtime] Subscribing to all collections...");
-
-    for (const [collection, queryKeys] of Object.entries(COLLECTION_KEY_MAP)) {
-      await subscribeOne(collection, queryKeys);
+    for (const [col, keys] of Object.entries(COLLECTION_KEY_MAP)) {
+      await subscribeOne(col, keys);
     }
-
     reconnecting.current = false;
-    backoffRef.current   = 1000; // reset backoff after successful connect
-    console.log("[Realtime] ✅ All collections subscribed");
+    backoffRef.current   = 1000;
   }, [subscribeOne]);
 
-  // ── Reconnect with exponential backoff ────────────────────────────────────
+  // ── Reconnect with backoff ─────────────────────────────────────────────────
   const reconnect = useCallback((delayMs) => {
     if (reconnTimer.current) clearTimeout(reconnTimer.current);
-
     const delay = delayMs ?? backoffRef.current;
-    console.log(`[Realtime] Reconnecting in ${delay}ms...`);
-
     reconnTimer.current = setTimeout(async () => {
       await unsubscribeAll();
       subsRef.current      = {};
       reconnecting.current = false;
       await subscribeAll();
-
-      // Increase backoff for next failure (cap at MAX_BACKOFF_MS)
       backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
     }, delay);
   }, [subscribeAll]);
 
-  // ── Heartbeat: detect silent SSE drops ───────────────────────────────────
-  // If no SSE event received in 2× heartbeat window, force reconnect
+  // ── Heartbeat — detect silent SSE drops ───────────────────────────────────
   const startHeartbeat = useCallback(() => {
     if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
-
     heartbeatTimer.current = setInterval(() => {
-      const silentMs = Date.now() - lastEventRef.current;
-      const isConnected = pb.realtime?.clientId; // truthy when SSE is alive
-
+      if (pausedRef.current) return; // don't reconnect while hidden
+      const silentMs    = Date.now() - lastEventRef.current;
+      const isConnected = pb.realtime?.clientId;
       if (!isConnected && silentMs > HEARTBEAT_MS * 2) {
-        console.warn(`[Realtime] 💔 Heartbeat: SSE silent for ${Math.round(silentMs/1000)}s — reconnecting`);
         subsRef.current = {};
         reconnect(500);
       }
@@ -177,25 +147,32 @@ export function useRealtimeSync() {
     subscribeAll();
     startHeartbeat();
 
-    // ── Re-subscribe when tab becomes visible ────────────────────────────
+    // ── Pause SSE processing when tab hidden (screen off / backgrounded) ──
+    // SSE connection stays open (closing/reopening is expensive) but we
+    // skip event processing and refetches — saves CPU and radio wake-ups.
     function onVisibilityChange() {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "hidden") {
+        pausedRef.current = true;
+      } else {
+        pausedRef.current = false;
+        // Refetch stale data now that tab is visible again
         const activeSubs = Object.values(subsRef.current).filter(Boolean).length;
-        const totalSubs = Object.keys(COLLECTION_KEY_MAP).length;
+        const totalSubs  = Object.keys(COLLECTION_KEY_MAP).length;
         if (activeSubs < totalSubs) {
-          console.log("[Realtime] Tab visible — subscriptions lost, reconnecting");
           reconnect(300);
+        } else {
+          // Just refresh data without full reconnect
+          for (const keys of Object.values(COLLECTION_KEY_MAP)) {
+            for (const key of keys) {
+              qc.invalidateQueries({ queryKey: key, exact: false });
+            }
+          }
         }
       }
     }
 
-    // ── Re-subscribe when internet returns ───────────────────────────────
-    function onOnline() {
-      console.log("[Realtime] Back online — reconnecting");
-      reconnect(1000);
-    }
+    function onOnline() { reconnect(1000); }
 
-    // ── Re-subscribe on auth change ───────────────────────────────────────
     const unsubAuth = pb.authStore.onChange(() => {
       if (pb.authStore.isValid) {
         reconnect(300);
@@ -205,11 +182,10 @@ export function useRealtimeSync() {
       }
     });
 
-    // ── PocketBase native SSE disconnect event ────────────────────────────
     pb.realtime.onDisconnect = () => {
-      console.warn("[Realtime] SSE onDisconnect fired — reconnecting");
+      if (pausedRef.current) return; // expected — tab hidden
       subsRef.current = {};
-      reconnect(); // uses current backoff
+      reconnect();
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -220,7 +196,7 @@ export function useRealtimeSync() {
       subsRef.current = {};
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("online", onOnline);
-      if (reconnTimer.current)   clearTimeout(reconnTimer.current);
+      if (reconnTimer.current)    clearTimeout(reconnTimer.current);
       if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
       if (typeof unsubAuth === "function") unsubAuth();
       pb.realtime.onDisconnect = null;
@@ -228,12 +204,8 @@ export function useRealtimeSync() {
   }, [qc, subscribeAll, startHeartbeat, reconnect]);
 }
 
-// ── Unsubscribe from all PocketBase realtime channels ────────────────────────
 async function unsubscribeAll() {
   try {
     await pb.realtime.unsubscribe();
-    console.log("[Realtime] Unsubscribed all");
-  } catch (err) {
-    console.warn("[Realtime] Unsubscribe error:", err);
-  }
+  } catch {}
 }

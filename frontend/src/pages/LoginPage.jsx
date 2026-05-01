@@ -1,36 +1,75 @@
+// src/pages/LoginPage.jsx
+// Fast-feeling login with progressive step feedback
+
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../store/auth";
-import { Eye, EyeOff, Navigation, ArrowRight } from "lucide-react";
+import { Eye, EyeOff, Navigation, ArrowRight, Check } from "lucide-react";
 import toast from "react-hot-toast";
+
+const STEPS = [
+  "Verifying credentials…",
+  "Loading your workspace…",
+  "Almost ready…",
+];
 
 export default function LoginPage() {
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [show,     setShow]     = useState(false);
   const [loading,  setLoading]  = useState(false);
+  const [step,     setStep]     = useState(0);   // progress step index
+  const [done,     setDone]     = useState(false);
   const { login } = useAuth();
   const navigate  = useNavigate();
 
   const submit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setStep(0);
+
+    // Step 1 — auth request
+    let user;
     try {
-      const user = await login(email, password);
-      toast.success(`Welcome, ${user.name.split(" ")[0]}!`);
-      navigate("/dashboard");
+      // Advance step text after short delay so it feels responsive
+      const stepTimer = setInterval(() => {
+        setStep(s => (s < STEPS.length - 1 ? s + 1 : s));
+      }, 600);
+
+      user = await login(email, password);
+      clearInterval(stepTimer);
     } catch {
+      setLoading(false);
+      setStep(0);
       toast.error("Wrong email or password");
-    } finally { setLoading(false); }
+      // Shake the button
+      return;
+    }
+
+    // Step 3 — success flash before redirect
+    setDone(true);
+    setStep(STEPS.length - 1);
+    toast.success(`Welcome back, ${user.name.split(" ")[0]}! 👋`);
+
+    // Small delay so the green tick is visible — feels polished, not abrupt
+    await new Promise(r => setTimeout(r, 400));
+    navigate("/dashboard");
   };
 
   return (
     <div className="min-h-screen bg-[#0a0d0f] flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Background grid */}
       <div className="absolute inset-0 opacity-[0.03]"
-        style={{ backgroundImage: "linear-gradient(#c8f230 1px, transparent 1px), linear-gradient(90deg, #c8f230 1px, transparent 1px)", backgroundSize: "60px 60px" }} />
+        style={{
+          backgroundImage: "linear-gradient(#c8f230 1px, transparent 1px), linear-gradient(90deg, #c8f230 1px, transparent 1px)",
+          backgroundSize: "60px 60px"
+        }}
+      />
+      {/* Glow */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-[#c8f230]/5 rounded-full blur-3xl pointer-events-none" />
 
       <div className="w-full max-w-sm relative animate-slide-up">
+        {/* Logo */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#c8f230] mb-5 shadow-lg shadow-[#c8f230]/25">
             <Navigation size={30} className="text-[#0a0d0f]" />
@@ -41,34 +80,78 @@ export default function LoginPage() {
 
         <div className="bg-[#111418] border border-[#21272f] rounded-2xl p-7 shadow-2xl">
           <p className="text-[#8b95a1] text-sm mb-6">Sign in to your workspace</p>
+
           <form onSubmit={submit} className="space-y-4">
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-[#8b95a1] uppercase tracking-wider">Email</label>
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
-                placeholder="you@fieldteam.co.ke" autoComplete="email"
-                className="w-full bg-[#0a0d0f] border border-[#21272f] rounded-xl px-4 py-3 text-sm text-white placeholder:text-[#3d4550] outline-none focus:border-[#c8f230] transition-colors" />
+              <input
+                type="email" value={email} onChange={e => setEmail(e.target.value)}
+                required placeholder="you@fieldteam.co.ke" autoComplete="email"
+                disabled={loading}
+                className="w-full bg-[#0a0d0f] border border-[#21272f] rounded-xl px-4 py-3 text-sm text-white placeholder:text-[#3d4550] outline-none focus:border-[#c8f230] transition-colors disabled:opacity-50"
+              />
             </div>
+
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-[#8b95a1] uppercase tracking-wider">Password</label>
               <div className="relative">
-                <input type={show ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} required
-                  placeholder="••••••••" autoComplete="current-password"
-                  className="w-full bg-[#0a0d0f] border border-[#21272f] rounded-xl px-4 py-3 pr-11 text-sm text-white placeholder:text-[#3d4550] outline-none focus:border-[#c8f230] transition-colors" />
-                <button type="button" onClick={() => setShow(!show)}
+                <input
+                  type={show ? "text" : "password"} value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required placeholder="••••••••" autoComplete="current-password"
+                  disabled={loading}
+                  className="w-full bg-[#0a0d0f] border border-[#21272f] rounded-xl px-4 py-3 pr-11 text-sm text-white placeholder:text-[#3d4550] outline-none focus:border-[#c8f230] transition-colors disabled:opacity-50"
+                />
+                <button type="button" onClick={() => setShow(!show)} tabIndex={-1}
                   className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#8b95a1] hover:text-white">
                   {show ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
             </div>
-            <button type="submit" disabled={loading}
-              className="w-full bg-[#c8f230] hover:bg-[#d9ff50] disabled:opacity-50 text-[#0a0d0f] font-bold py-3.5 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 mt-2 text-sm">
-              {loading
-                ? <span className="w-4 h-4 border-2 border-[#0a0d0f]/30 border-t-[#0a0d0f] rounded-full animate-spin" />
-                : <><ArrowRight size={16} /> Sign In</>}
+
+            {/* Submit button — shows progress steps inline */}
+            <button
+              type="submit"
+              disabled={loading}
+              className={`w-full font-bold py-3.5 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 mt-2 text-sm ${
+                done
+                  ? "bg-[#4ade80] text-[#0a0d0f]"
+                  : "bg-[#c8f230] hover:bg-[#d9ff50] disabled:opacity-80 text-[#0a0d0f]"
+              }`}
+            >
+              {loading ? (
+                done ? (
+                  <><Check size={16} className="animate-bounce" /> Done!</>
+                ) : (
+                  <>
+                    <span className="w-4 h-4 border-2 border-[#0a0d0f]/30 border-t-[#0a0d0f] rounded-full animate-spin flex-shrink-0" />
+                    <span className="text-sm font-medium transition-all">{STEPS[step]}</span>
+                  </>
+                )
+              ) : (
+                <><ArrowRight size={16} /> Sign In</>
+              )}
             </button>
           </form>
+
+          {/* Progress dots — visible during loading */}
+          {loading && !done && (
+            <div className="flex justify-center gap-1.5 mt-4">
+              {STEPS.map((_, i) => (
+                <div
+                  key={i}
+                  className={`h-1 rounded-full transition-all duration-500 ${
+                    i <= step ? "bg-[#c8f230] w-6" : "bg-[#21272f] w-3"
+                  }`}
+                />
+              ))}
+            </div>
+          )}
         </div>
-        <p className="text-center text-xs text-[#3d4550] mt-6 font-mono">FieldTrack v3 · {new Date().getFullYear()}</p>
+
+        <p className="text-center text-xs text-[#3d4550] mt-6 font-mono">
+          FieldTrack v3 · {new Date().getFullYear()}
+        </p>
       </div>
     </div>
   );
