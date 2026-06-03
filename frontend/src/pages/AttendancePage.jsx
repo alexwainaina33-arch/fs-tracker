@@ -1,5 +1,9 @@
 // src/pages/AttendancePage.jsx
 // Offline-safe: clock-in/out queued when no internet, syncs on reconnect
+// v2 fixes:
+//   - Selfie is now OPTIONAL — users can skip the photo
+//   - Clock-in action shows a choice: "Take Selfie" or "Skip Photo"
+//   - Faster: no camera modal required to clock in
 
 import React, { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -9,7 +13,7 @@ import { isOnline, enqueueAttendanceClockIn, enqueueAttendanceClockOut } from ".
 import CameraCapture from "../components/CameraCapture";
 import { Badge } from "../components/ui/Badge";
 import { Btn } from "../components/ui/Btn";
-import { Camera, Clock, MapPin, CheckCircle, ExternalLink, WifiOff } from "lucide-react";
+import { Camera, Clock, MapPin, CheckCircle, ExternalLink, WifiOff, X } from "lucide-react";
 import { format, differenceInMinutes } from "date-fns";
 import toast from "react-hot-toast";
 
@@ -24,6 +28,39 @@ function getPositionSafe(timeout = 8000) {
   });
 }
 
+// ── Selfie choice modal — appears BEFORE camera opens ─────────────────────────
+function SelfieChoiceModal({ open, mode, onTakePhoto, onSkip, onCancel }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[9000] bg-black/80 flex items-end sm:items-center justify-center p-4">
+      <div className="w-full max-w-sm bg-[#111418] border border-[#21272f] rounded-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <p className="font-bold text-white text-base">
+            {mode === "clock-in" ? "Clock In" : "Clock Out"}
+          </p>
+          <button onClick={onCancel} className="w-8 h-8 flex items-center justify-center rounded-full bg-[#21272f] text-[#8b95a1] hover:text-white">
+            <X size={14} />
+          </button>
+        </div>
+        <p className="text-sm text-[#8b95a1]">
+          A selfie helps verify attendance. It's optional — you can skip if inconvenient.
+        </p>
+        <div className="flex flex-col gap-2">
+          <Btn onClick={onTakePhoto} className="w-full flex items-center justify-center gap-2">
+            <Camera size={15} /> Take Selfie &amp; {mode === "clock-in" ? "Clock In" : "Clock Out"}
+          </Btn>
+          <button
+            onClick={onSkip}
+            className="w-full py-3 rounded-xl border border-[#21272f] text-[#8b95a1] hover:text-white text-sm font-medium transition-colors hover:border-[#2a3040]"
+          >
+            Skip Photo — {mode === "clock-in" ? "Clock In" : "Clock Out"} Now
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AttendancePage() {
   const { user } = useAuth();
   const qc      = useQueryClient();
@@ -31,8 +68,9 @@ export default function AttendancePage() {
   const today   = format(new Date(), "yyyy-MM-dd");
   const online  = isOnline();
 
-  const [camOpen, setCamOpen] = useState(false);
-  const [camMode, setCamMode] = useState("clock-in");
+  const [choiceOpen, setChoiceOpen] = useState(false);
+  const [camOpen,    setCamOpen]    = useState(false);
+  const [camMode,    setCamMode]    = useState("clock-in");
 
   const cachedPos = useRef(null);
   useEffect(() => {
@@ -56,7 +94,7 @@ export default function AttendancePage() {
         expand: "user",
         sort:   "-clock_in",
       }),
-    enabled:        isAdmin,
+    enabled:         isAdmin,
     refetchInterval: 15000,
   });
 
@@ -77,14 +115,11 @@ export default function AttendancePage() {
         clock_in_lng: pos ? pos.coords.longitude : null,
       };
 
-      // ── OFFLINE path ──────────────────────────────────────────────────────
       if (!isOnline()) {
-        // Queue without photo (binary can't be stored in IndexedDB easily)
         await enqueueAttendanceClockIn(payload);
         return { _offline: true, _localTime: now.toISOString(), _status: payload.status };
       }
 
-      // ── ONLINE path ───────────────────────────────────────────────────────
       const fd = new FormData();
       Object.entries(payload).forEach(([k, v]) => { if (v !== null) fd.append(k, v); });
       if (photo?.blob) fd.append("clock_in_selfie", photo.blob, `selfie-in-${Date.now()}.jpg`);
@@ -125,16 +160,15 @@ export default function AttendancePage() {
         clock_out_lng: pos ? pos.coords.longitude : null,
       };
 
-      // ── OFFLINE path ──────────────────────────────────────────────────────
       if (!isOnline()) {
         if (!mine?.id) throw new Error("No clock-in record found to update");
         await enqueueAttendanceClockOut(mine.id, payload);
         return { _offline: true };
       }
 
-      // ── ONLINE path ───────────────────────────────────────────────────────
       const fd = new FormData();
       Object.entries(payload).forEach(([k, v]) => { if (v !== null) fd.append(k, v); });
+      if (photo?.blob) fd.append("clock_out_selfie", photo.blob, `selfie-out-${Date.now()}.jpg`);
       return pb.collection("ft_attendance").update(mine.id, fd);
     },
     onSuccess: (result) => {
@@ -156,21 +190,35 @@ export default function AttendancePage() {
     },
   });
 
+  // User chose "Take Selfie" in the choice modal
+  const handleOpenCamera = () => {
+    setChoiceOpen(false);
+    setCamOpen(true);
+  };
+
+  // User chose "Skip Photo"
+  const handleSkipPhoto = () => {
+    setChoiceOpen(false);
+    if (camMode === "clock-in") clockInMut.mutate({ photo: null });
+    else                        clockOutMut.mutate({ photo: null });
+  };
+
+  // Camera captured photo
   const handlePhoto = (photo) => {
     setCamOpen(false);
     if (camMode === "clock-in") clockInMut.mutate({ photo });
     else                        clockOutMut.mutate({ photo });
   };
 
-  // When offline, skip the camera and clock in directly
+  // Main button press
   const handleClockAction = (mode) => {
+    setCamMode(mode);
     if (!isOnline()) {
-      // No camera when offline — clock in immediately with GPS only
+      // Offline: skip camera entirely
       if (mode === "clock-in") clockInMut.mutate({ photo: null });
       else                     clockOutMut.mutate({ photo: null });
     } else {
-      setCamMode(mode);
-      setCamOpen(true);
+      setChoiceOpen(true);
     }
   };
 
@@ -196,7 +244,6 @@ export default function AttendancePage() {
           <WifiOff size={14} className="text-[#ff9f43] flex-shrink-0" />
           <p className="text-sm text-[#ff9f43]">
             You're offline. Clock-in/out will be saved locally and synced automatically when you reconnect.
-            Selfie photos will not be captured.
           </p>
         </div>
       )}
@@ -265,12 +312,12 @@ export default function AttendancePage() {
           <div className="flex flex-col gap-2 flex-shrink-0">
             {!mine && (
               <Btn onClick={() => handleClockAction("clock-in")} disabled={clockInMut.isPending} size="lg">
-                <Camera size={16} /> {online ? "Clock In" : "Clock In (Offline)"}
+                <Clock size={16} /> {online ? "Clock In" : "Clock In (Offline)"}
               </Btn>
             )}
             {isClockedIn && (
               <Btn onClick={() => handleClockAction("clock-out")} disabled={clockOutMut.isPending} variant="danger" size="lg">
-                <Camera size={16} /> {online ? "Clock Out" : "Clock Out (Offline)"}
+                <Clock size={16} /> {online ? "Clock Out" : "Clock Out (Offline)"}
               </Btn>
             )}
             {isClockedOut && (
@@ -343,6 +390,15 @@ export default function AttendancePage() {
           </div>
         </div>
       )}
+
+      {/* Selfie choice modal */}
+      <SelfieChoiceModal
+        open={choiceOpen}
+        mode={camMode}
+        onTakePhoto={handleOpenCamera}
+        onSkip={handleSkipPhoto}
+        onCancel={() => setChoiceOpen(false)}
+      />
 
       <CameraCapture open={camOpen} onClose={() => setCamOpen(false)} onCapture={handlePhoto}
         title={camMode === "clock-in" ? "Clock-In Selfie" : "Clock-Out Selfie"} facingMode="user" />

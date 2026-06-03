@@ -1,17 +1,13 @@
 // src/hooks/useRealtimeSync.js
-// Battery-optimised realtime sync:
-// • Pauses SSE when tab is hidden (phone screen off / other app)
-// • Only invalidates the specific query that changed — not everything
-// • Longer heartbeat interval
-// • Unsubscribes ft_locations (high-frequency, not needed in UI)
+// Battery-optimised realtime sync — v2
+// Fix: pb.realtime.onDisconnect was being called repeatedly on weak networks
+//      causing subscribe/unsubscribe thrashing and app instability.
+//      Solution: use a single reconnect lock and minimum backoff of 5s.
 
 import { useEffect, useRef, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { pb } from "../lib/pb";
 
-// ── Collections to subscribe to ───────────────────────────────────────────────
-// ft_locations removed — it fires every 60s per user and is map-only.
-// The LiveMapPage subscribes to it directly when open.
 const COLLECTION_KEY_MAP = {
   ft_orders:          [["orders"], ["dash-recent-orders"], ["dash-pending-orders"]],
   ft_order_payments:  [["payments"], ["dash-pending-payments"]],
@@ -25,8 +21,9 @@ const COLLECTION_KEY_MAP = {
   ft_users:           [["team-list"]],
 };
 
-const MAX_BACKOFF_MS = 30_000;
-const HEARTBEAT_MS   = 60_000; // was 30s — doubled to halve check frequency
+const MAX_BACKOFF_MS  = 60_000;  // was 30s — longer cap reduces hammering
+const MIN_BACKOFF_MS  = 5_000;   // NEW: minimum 5s before any reconnect attempt
+const HEARTBEAT_MS    = 60_000;
 
 export function useRealtimeSync() {
   const qc             = useQueryClient();
@@ -34,21 +31,18 @@ export function useRealtimeSync() {
   const reconnecting   = useRef(false);
   const reconnTimer    = useRef(null);
   const heartbeatTimer = useRef(null);
-  const backoffRef     = useRef(1000);
+  const backoffRef     = useRef(MIN_BACKOFF_MS);
   const lastEventRef   = useRef(Date.now());
-  const pausedRef      = useRef(false); // true when tab hidden
+  const pausedRef      = useRef(false);
+  // NEW: track last disconnect time to rate-limit reconnect attempts
+  const lastDisconnect = useRef(0);
 
-  // ── Invalidate only the specific keys for this collection ─────────────────
   const flushKeys = useCallback((queryKeys) => {
     for (const key of queryKeys) {
       qc.invalidateQueries({ queryKey: key, exact: false });
     }
-    // Note: removed refetchQueries — invalidate is enough; React Query
-    // will refetch automatically when the component is visible/mounted.
-    // This halves the number of network requests on each SSE event.
   }, [qc]);
 
-  // ── Optimistically patch cache ─────────────────────────────────────────────
   const patchCache = useCallback((collection, event) => {
     const { action, record } = event;
     if (!record?.id) return;
@@ -85,14 +79,13 @@ export function useRealtimeSync() {
     }
   }, [qc]);
 
-  // ── Subscribe to one collection ───────────────────────────────────────────
   const subscribeOne = useCallback(async (collection, queryKeys) => {
     if (subsRef.current[collection] === true) return;
     try {
       await pb.collection(collection).subscribe("*", (e) => {
-        if (pausedRef.current) return; // tab hidden — drop event, don't process
+        if (pausedRef.current) return;
         lastEventRef.current = Date.now();
-        backoffRef.current   = 1000;
+        backoffRef.current   = MIN_BACKOFF_MS;
         patchCache(collection, e);
         flushKeys(queryKeys);
       });
@@ -103,7 +96,6 @@ export function useRealtimeSync() {
     }
   }, [patchCache, flushKeys]);
 
-  // ── Subscribe to all collections ──────────────────────────────────────────
   const subscribeAll = useCallback(async () => {
     if (reconnecting.current || !pb.authStore.isValid) return;
     reconnecting.current = true;
@@ -111,32 +103,33 @@ export function useRealtimeSync() {
       await subscribeOne(col, keys);
     }
     reconnecting.current = false;
-    backoffRef.current   = 1000;
+    backoffRef.current   = MIN_BACKOFF_MS;
   }, [subscribeOne]);
 
-  // ── Reconnect with backoff ─────────────────────────────────────────────────
   const reconnect = useCallback((delayMs) => {
     if (reconnTimer.current) clearTimeout(reconnTimer.current);
-    const delay = delayMs ?? backoffRef.current;
+    // Rate-limit: if we just disconnected, don't retry for at least MIN_BACKOFF_MS
+    const timeSinceDisconnect = Date.now() - lastDisconnect.current;
+    const safeDelay = Math.max(delayMs ?? backoffRef.current, MIN_BACKOFF_MS, MIN_BACKOFF_MS - timeSinceDisconnect);
+
     reconnTimer.current = setTimeout(async () => {
       await unsubscribeAll();
       subsRef.current      = {};
       reconnecting.current = false;
       await subscribeAll();
       backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
-    }, delay);
+    }, safeDelay);
   }, [subscribeAll]);
 
-  // ── Heartbeat — detect silent SSE drops ───────────────────────────────────
   const startHeartbeat = useCallback(() => {
     if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
     heartbeatTimer.current = setInterval(() => {
-      if (pausedRef.current) return; // don't reconnect while hidden
+      if (pausedRef.current) return;
       const silentMs    = Date.now() - lastEventRef.current;
       const isConnected = pb.realtime?.clientId;
       if (!isConnected && silentMs > HEARTBEAT_MS * 2) {
         subsRef.current = {};
-        reconnect(500);
+        reconnect(MIN_BACKOFF_MS);
       }
     }, HEARTBEAT_MS);
   }, [reconnect]);
@@ -147,21 +140,16 @@ export function useRealtimeSync() {
     subscribeAll();
     startHeartbeat();
 
-    // ── Pause SSE processing when tab hidden (screen off / backgrounded) ──
-    // SSE connection stays open (closing/reopening is expensive) but we
-    // skip event processing and refetches — saves CPU and radio wake-ups.
     function onVisibilityChange() {
       if (document.visibilityState === "hidden") {
         pausedRef.current = true;
       } else {
         pausedRef.current = false;
-        // Refetch stale data now that tab is visible again
         const activeSubs = Object.values(subsRef.current).filter(Boolean).length;
         const totalSubs  = Object.keys(COLLECTION_KEY_MAP).length;
         if (activeSubs < totalSubs) {
-          reconnect(300);
+          reconnect(1000);
         } else {
-          // Just refresh data without full reconnect
           for (const keys of Object.values(COLLECTION_KEY_MAP)) {
             for (const key of keys) {
               qc.invalidateQueries({ queryKey: key, exact: false });
@@ -171,11 +159,14 @@ export function useRealtimeSync() {
       }
     }
 
-    function onOnline() { reconnect(1000); }
+    function onOnline() {
+      // Back online — wait MIN_BACKOFF_MS before reconnecting to let network settle
+      reconnect(MIN_BACKOFF_MS);
+    }
 
     const unsubAuth = pb.authStore.onChange(() => {
       if (pb.authStore.isValid) {
-        reconnect(300);
+        reconnect(1000);
       } else {
         unsubscribeAll();
         subsRef.current = {};
@@ -183,9 +174,11 @@ export function useRealtimeSync() {
     });
 
     pb.realtime.onDisconnect = () => {
-      if (pausedRef.current) return; // expected — tab hidden
+      if (pausedRef.current) return;
+      // Record disconnect time so reconnect can enforce minimum delay
+      lastDisconnect.current = Date.now();
       subsRef.current = {};
-      reconnect();
+      reconnect(); // uses backoffRef with MIN floor
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);

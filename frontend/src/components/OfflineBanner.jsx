@@ -3,6 +3,7 @@ import { WifiOff } from "lucide-react";
 
 export default function OfflineBanner() {
   const online = useOnlineStatus();
+  // NOTE: hook must be called BEFORE any conditional return
   if (online) return null;
   return (
     <div className="offline-banner fixed top-0 left-0 right-0 z-[300] bg-[#ffab00] text-[#0a0d0f] px-4 py-2 flex items-center gap-2 text-sm font-medium">
