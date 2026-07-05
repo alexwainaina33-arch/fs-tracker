@@ -141,6 +141,7 @@ export function useCreateOrder() {
       const fd = new FormData();
       fd.append("order_no",            orderNo);
       fd.append("staff",               user.id);
+      if (user.org_id) fd.append("org_id", user.org_id);
       fd.append("customer_name",       formData.customer_name);
       fd.append("customer_phone",      formData.customer_phone || "");
       fd.append("customer_category",   formData.customer_category);

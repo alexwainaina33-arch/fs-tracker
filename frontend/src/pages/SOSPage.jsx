@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { pb } from "../lib/pb";
 import { useAuth } from "../store/auth";
+import { beginCriticalActivity, endCriticalActivity } from "../lib/criticalActivity";
 import { getPosition } from "../hooks/useGPS";
 import { AlertOctagon, MapPin, Phone, ArrowLeft, CheckCircle, Loader } from "lucide-react";
 import toast from "react-hot-toast";
@@ -25,8 +26,10 @@ export default function SOSPage() {
   const [pos,     setPos]     = useState(null);
   const [holding, setHolding] = useState(false);
   const [holdPct, setHoldPct] = useState(0);
-  const holdStart = useRef(null);
-  const animRef   = useRef(null);
+  const holdStart   = useRef(null);
+  const animRef     = useRef(null);
+  const criticalRef = useRef(false); // true while this component holds the critical-activity lock
+  const handoffRef  = useRef(false); // true once a full 3s hold has handed the lock off to sendSOS
 
   useEffect(() => {
     getPosition().then(p => setPos({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) })).catch(() => {});
@@ -35,27 +38,45 @@ export default function SOSPage() {
   const startHold = () => {
     holdStart.current = Date.now();
     setHolding(true);
+    handoffRef.current = false;
+    if (!criticalRef.current) {
+      criticalRef.current = true;
+      beginCriticalActivity(); // block a silent app reload until this SOS is resolved
+    }
     const tick = () => {
       const pct = Math.min(((Date.now() - holdStart.current) / HOLD_DURATION) * 100, 100);
       setHoldPct(pct);
-      if (pct < 100) animRef.current = requestAnimationFrame(tick);
-      else sendSOS();
+      if (pct < 100) {
+        animRef.current = requestAnimationFrame(tick);
+      } else {
+        handoffRef.current = true; // full hold reached — sendSOS now owns the lock
+        sendSOS();
+      }
     };
     animRef.current = requestAnimationFrame(tick);
   };
 
+  // Fires when the user releases early (before the 3s hold completes) —
+  // a genuine cancel, so it's safe to release the critical-activity lock here.
   const cancelHold = () => {
     if (animRef.current) cancelAnimationFrame(animRef.current);
     setHolding(false);
     setHoldPct(0);
+    if (criticalRef.current && !handoffRef.current) {
+      criticalRef.current = false;
+      endCriticalActivity();
+    }
   };
 
   const sendSOS = async () => {
-    cancelHold();
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+    setHolding(false);
+    setHoldPct(0);
     setStep("sending");
     try {
       await pb.collection("ft_sos_alerts").create({
         user:         user.id,
+        org_id:       user.org_id,
         alert_type:   sosType.id,
         latitude:     pos?.lat ?? null,
         longitude:    pos?.lng ?? null,
@@ -68,6 +89,13 @@ export default function SOSPage() {
     } catch (err) {
       toast.error("SOS failed: " + err.message);
       setStep("confirm");
+    } finally {
+      // Send attempt is fully resolved (success or failure) — safe to reload now
+      if (criticalRef.current) {
+        criticalRef.current = false;
+        handoffRef.current = false;
+        endCriticalActivity();
+      }
     }
   };
 

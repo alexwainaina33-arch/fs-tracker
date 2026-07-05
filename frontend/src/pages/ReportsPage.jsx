@@ -38,6 +38,7 @@ export default function ReportsPage() {
     mutationFn: async () => {
       const fd = new FormData();
       fd.append("submitted_by", user.id);
+      if (user.org_id) fd.append("org_id", user.org_id);
       fd.append("title",        form.title);
       fd.append("report_type",  form.report_type);
       fd.append("report_date",  form.report_date);

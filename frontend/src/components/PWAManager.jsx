@@ -4,11 +4,34 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Download } from "lucide-react";
+import { isCriticalActivityActive } from "../lib/criticalActivity";
 
 // ─── REGISTER SERVICE WORKER (silent auto-update) ────────────────────────────
 export function useServiceWorker() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
+
+    let interval = null;
+    let refreshing = false;
+
+    // Reload now, unless something safety-critical (e.g. an SOS hold/send)
+    // is in progress — then check again every 2s until it's safe.
+    const reloadWhenSafe = () => {
+      if (refreshing) return;
+      if (isCriticalActivityActive()) {
+        console.log("[PWA] Update ready but critical activity in progress — deferring reload");
+        const waitInterval = setInterval(() => {
+          if (!isCriticalActivityActive()) {
+            clearInterval(waitInterval);
+            refreshing = true;
+            window.location.reload();
+          }
+        }, 2000);
+        return;
+      }
+      refreshing = true;
+      window.location.reload();
+    };
 
     navigator.serviceWorker
       .register("/sw.js", { scope: "/" })
@@ -16,41 +39,46 @@ export function useServiceWorker() {
         console.log("[PWA] Service worker registered");
 
         // Check for new SW version every 30 seconds
-        const interval = setInterval(() => reg.update(), 30 * 1000);
+        interval = setInterval(() => reg.update(), 30 * 1000);
 
-        // New SW found — silently activate it immediately, no user prompt
+        // New SW found — silently activate it, no user prompt
         reg.addEventListener("updatefound", () => {
           const newSW = reg.installing;
           if (!newSW) return;
 
           newSW.addEventListener("statechange", () => {
             if (newSW.state === "installed" && navigator.serviceWorker.controller) {
-              console.log("[PWA] Update ready — applying silently");
+              console.log("[PWA] Update ready — will apply when safe");
               newSW.postMessage("SKIP_WAITING");
             }
           });
         });
-
-        return () => clearInterval(interval);
       })
       .catch((err) => console.warn("[PWA] SW registration failed:", err));
 
-    // When SW sends SW_UPDATED message — reload silently
-    navigator.serviceWorker.addEventListener("message", (event) => {
+    const handleMessage = (event) => {
       if (event.data?.type === "SW_UPDATED") {
-        console.log("[PWA] SW_UPDATED received — reloading");
-        setTimeout(() => window.location.reload(), 300);
+        console.log("[PWA] SW_UPDATED received");
+        reloadWhenSafe();
       }
-    });
+    };
 
-    // When the new SW takes control — reload silently
-    let refreshing = false;
-    navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (!refreshing) {
-        refreshing = true;
-        window.location.reload();
-      }
-    });
+    const handleControllerChange = () => {
+      reloadWhenSafe();
+    };
+
+    navigator.serviceWorker.addEventListener("message", handleMessage);
+    navigator.serviceWorker.addEventListener("controllerchange", handleControllerChange);
+
+    // This is the actual fix for the leak: cleanup now runs from the
+    // outer effect body, so it fires on every real unmount (e.g. every
+    // logout), instead of being buried inside the .then() where React
+    // never saw it.
+    return () => {
+      if (interval) clearInterval(interval);
+      navigator.serviceWorker.removeEventListener("message", handleMessage);
+      navigator.serviceWorker.removeEventListener("controllerchange", handleControllerChange);
+    };
   }, []);
 }
 

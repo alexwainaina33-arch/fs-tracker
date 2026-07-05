@@ -99,6 +99,7 @@ export default function GeofencePage() {
     mutationFn: (d) =>
       pb.collection("ft_geofences").create({
         ...d,
+        org_id:        d.org_id || undefined,
         latitude:      parseFloat(d.latitude),
         longitude:     parseFloat(d.longitude),
         radius_meters: parseInt(d.radius_meters, 10),

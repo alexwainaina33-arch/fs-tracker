@@ -105,6 +105,7 @@ export default function TasksPage() {
       const payload = {
         ...rest,
         created_by: user.id,
+        org_id:     user.org_id,
         status:     rest.status || "pending",
       };
       const due = buildDueDate(due_date_str, due_time_str);

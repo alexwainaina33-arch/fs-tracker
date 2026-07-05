@@ -54,7 +54,7 @@ export default function App() {
         <Route path="team"              element={<Guard adminOnly><TeamPage /></Guard>} />
         <Route path="team-summary"      element={<Guard adminOnly><TeamSummaryPage /></Guard>} />
         <Route path="geofences"         element={<Guard adminOnly><GeofencePage /></Guard>} />
-      import ProfilePage          from "./pages/ProfilePage";  <Route path="approvals"         element={<Guard adminOnly><ApprovalsPage /></Guard>} />
+      <Route path="approvals"         element={<Guard adminOnly><ApprovalsPage /></Guard>} />
         <Route path="payment-approvals" element={<Guard adminOnly><PaymentApprovalsPage /></Guard>} />
         <Route path="targets"           element={<Guard adminOnly><TargetsPage /></Guard>} />
       </Route>

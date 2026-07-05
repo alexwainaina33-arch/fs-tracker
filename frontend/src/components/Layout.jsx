@@ -8,12 +8,14 @@ import { useRealtimeSync } from "../hooks/useRealtimeSync";
 import OfflineBanner from "./OfflineBanner";
 import NotificationBell from "./NotificationBell";
 import PWAManager from "./PWAManager";
+import GPSConsentBanner from "./GPSConsentBanner";
 import {
   LayoutDashboard, Map, CheckSquare, Clock, Receipt,
   FileText, Users, LogOut, Menu, X,
   Navigation, AlertOctagon, Shield,
   ShoppingCart, CheckCircle, Trophy, Target,
   Sprout, BarChart2, Sun, Moon, CreditCard, Images,
+  PauseCircle, PlayCircle,
 } from "lucide-react";
 
 const NAV_ADMIN = [
@@ -49,21 +51,22 @@ const NAV_FIELD = [
 ];
 
 export default function Layout() {
-  const { user, logout }                    = useAuth();
-  const { tracking, position, start, stop } = useGPS();
-  const { theme, toggle, init }             = useTheme();
-  const navigate                            = useNavigate();
-  const location                            = useLocation();
-  const [open, setOpen]                     = useState(false);
+  const { user, logout }                                         = useAuth();
+  const { tracking, paused, position, start, stop, pause, resume, consent, grantConsent, revokeConsent } = useGPS();
+  const { theme, toggle, init }                                  = useTheme();
+  const navigate                                                 = useNavigate();
+  const location                                                 = useLocation();
+  const [open, setOpen]                                          = useState(false);
 
   useEffect(() => { init(); }, []);
   useRealtimeSync();
 
-  const isAdmin   = ["admin","manager","supervisor"].includes(user?.role);
-  const navItems  = isAdmin ? NAV_ADMIN : NAV_FIELD;
-  const allNav    = [...NAV_ADMIN, ...NAV_FIELD];
-  const isLight   = theme === "light";
-  const isMapPage = location.pathname === "/map";
+  const isFieldStaff = user?.role === "field_staff";
+  const isAdmin      = ["admin", "manager", "supervisor"].includes(user?.role);
+  const navItems     = isAdmin ? NAV_ADMIN : NAV_FIELD;
+  const allNav       = [...NAV_ADMIN, ...NAV_FIELD];
+  const isLight      = theme === "light";
+  const isMapPage    = location.pathname === "/map";
 
   const sidebarBg    = isLight ? "bg-white border-[#e4e4e7]"   : "bg-[#0a0d0f] border-[#21272f]";
   const headerBg     = isLight ? "bg-white border-[#e4e4e7]"   : "bg-[#0a0d0f] border-[#21272f]";
@@ -77,10 +80,37 @@ export default function Layout() {
   const menuBtnCls   = isLight ? "text-[#71717a] hover:text-[#18181b]" : "text-[#8b95a1] hover:text-white";
   const navActive    = isLight ? "bg-[#f0ffd0] text-[#4a6000] font-medium" : "bg-[#c8f230]/10 text-[#c8f230] font-medium";
   const navInactive  = isLight ? "text-[#52525b] hover:text-[#18181b] hover:bg-[#f4f4f5]" : "text-[#8b95a1] hover:text-[#c2cad4] hover:bg-[#181c21]";
-  const gpsBg        = tracking
-    ? "bg-[#c8f230]/10 text-[#c8f230] border border-[#c8f230]/20"
-    : isLight ? "bg-[#f4f4f5] text-[#71717a] border border-[#e4e4e7]" : "bg-[#21272f] text-[#8b95a1]";
   const avatarBg     = isLight ? "bg-[#f0ffd0] border-[#c8f230]/50 text-[#4a6000]" : "bg-[#c8f230]/15 border-[#c8f230]/30 text-[#c8f230]";
+
+  // GPS button state: consent not given → grey; active → lime; paused → amber
+  const gpsLabel = !consent
+    ? "GPS Off"
+    : paused
+      ? "GPS Paused"
+      : tracking
+        ? "GPS Active"
+        : "GPS Off";
+
+  const gpsBg = !consent || (!tracking && !paused)
+    ? isLight ? "bg-[#f4f4f5] text-[#71717a] border border-[#e4e4e7]" : "bg-[#21272f] text-[#8b95a1]"
+    : paused
+      ? "bg-[#ff9f43]/10 text-[#ff9f43] border border-[#ff9f43]/20"
+      : "bg-[#c8f230]/10 text-[#c8f230] border border-[#c8f230]/20";
+
+  const gpsDot = !consent || (!tracking && !paused)
+    ? isLight ? "bg-[#a1a1aa]" : "bg-[#8b95a1]"
+    : paused
+      ? "bg-[#ff9f43]"
+      : "bg-[#c8f230] animate-pulse";
+
+  // GPS button action: if consent not granted → do nothing (banner handles it)
+  // if tracking → pause; if paused → resume; if stopped → start
+  const handleGpsButton = () => {
+    if (!consent) return; // banner will show
+    if (paused)    { resume(); return; }
+    if (tracking)  { pause();  return; }
+    start();
+  };
 
   return (
     <div className={`flex h-full overflow-hidden ${isLight ? "bg-[#f4f4f5]" : "bg-[#0a0d0f]"}`}>
@@ -110,17 +140,39 @@ export default function Layout() {
           <button onClick={() => setOpen(false)} className={`lg:hidden ${subText}`}><X size={18} /></button>
         </div>
 
-        {/* GPS toggle */}
-        <div className={`px-3 py-2 border-b ${dividerColor}`}>
-          <button onClick={tracking ? stop : start}
-            className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-all ${gpsBg}`}>
-            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${tracking ? "bg-[#c8f230] animate-pulse" : isLight ? "bg-[#a1a1aa]" : "bg-[#8b95a1]"}`} />
-            {tracking ? "GPS Active" : "GPS Off"}
-            {tracking && position && (
-              <span className="ml-auto font-mono text-[10px] opacity-60">±{Math.round(position.accuracy)}m</span>
-            )}
-          </button>
-        </div>
+        {/* GPS toggle — only for field staff with consent */}
+        {(isFieldStaff || tracking) && (
+          <div className={`px-3 py-2 border-b ${dividerColor}`}>
+            <button
+              onClick={handleGpsButton}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-all ${gpsBg}`}
+            >
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${gpsDot}`} />
+              {gpsLabel}
+              {tracking && !paused && position && (
+                <span className="ml-auto font-mono text-[10px] opacity-60">
+                  ±{Math.round(position.accuracy)}m
+                </span>
+              )}
+              {tracking && !paused && (
+                <PauseCircle size={12} className="ml-auto opacity-50" />
+              )}
+              {paused && (
+                <PlayCircle size={12} className="ml-auto opacity-70" />
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* Non-field-staff GPS indicator (admin viewing) */}
+        {!isFieldStaff && !tracking && (
+          <div className={`px-3 py-2 border-b ${dividerColor}`}>
+            <div className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium ${isLight ? "bg-[#f4f4f5] text-[#71717a]" : "bg-[#21272f] text-[#8b95a1]"}`}>
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isLight ? "bg-[#a1a1aa]" : "bg-[#8b95a1]"}`} />
+              GPS Off
+            </div>
+          </div>
+        )}
 
         {/* Navigation */}
         <nav className="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
@@ -148,7 +200,7 @@ export default function Layout() {
                 className={`text-xs font-medium truncate block hover:underline text-left w-full ${userNameCls}`}>
                 {user?.name}
               </button>
-              <p className={`text-[10px] capitalize ${subText}`}>{user?.role?.replace("_"," ")}</p>
+              <p className={`text-[10px] capitalize ${subText}`}>{user?.role?.replace("_", " ")}</p>
             </div>
             <button onClick={() => { logout(); navigate("/login"); }} title="Logout"
               className={`transition-colors ${logoutCls}`}>
@@ -171,7 +223,7 @@ export default function Layout() {
             {allNav.find(n => location.pathname.startsWith(n.to))?.label ?? "FieldTrack"}
           </h1>
           <div className="flex-1" />
-          {user?.role === "field_staff" && (
+          {isFieldStaff && (
             <button onClick={() => navigate("/sos")}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#ff4d4f]/15 border border-[#ff4d4f]/30 text-[#ff4d4f] text-xs font-bold hover:bg-[#ff4d4f]/25 transition-colors">
               <AlertOctagon size={14} className="animate-pulse" />
@@ -183,12 +235,15 @@ export default function Layout() {
             {isLight ? <Moon size={16} /> : <Sun size={16} />}
           </button>
           <NotificationBell />
-          {/* ── Profile avatar ── */}
           <button
             onClick={() => navigate("/profile")}
             title="My profile"
             className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 transition-opacity hover:opacity-75"
-            style={{ background: isLight ? "#f0ffd0" : "rgba(200,242,48,0.15)", border: `1px solid ${isLight ? "rgba(200,242,48,0.5)" : "rgba(200,242,48,0.3)"}`, color: isLight ? "#4a6000" : "#c8f230" }}>
+            style={{
+              background: isLight ? "#f0ffd0" : "rgba(200,242,48,0.15)",
+              border: `1px solid ${isLight ? "rgba(200,242,48,0.5)" : "rgba(200,242,48,0.3)"}`,
+              color: isLight ? "#4a6000" : "#c8f230",
+            }}>
             {user?.name?.[0]?.toUpperCase() ?? "?"}
           </button>
         </header>
@@ -197,6 +252,11 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* GPS Consent Banner — only for field_staff who haven't decided yet */}
+      {isFieldStaff && consent === null && (
+        <GPSConsentBanner onGrant={grantConsent} onRevoke={revokeConsent} />
+      )}
     </div>
   );
 }

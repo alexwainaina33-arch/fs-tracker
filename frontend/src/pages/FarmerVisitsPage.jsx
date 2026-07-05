@@ -1316,7 +1316,7 @@ function QuickLogModal({ open, onClose, onSuccess, user, position, online }) {
     setSaving(true);
     try {
       const payload = {
-        staff:user.id, visit_type:form.visit_type, farmer_name:form.contact_name,
+        staff:user.id, org_id:user.org_id, visit_type:form.visit_type, farmer_name:form.contact_name,
         county:form.county, visit_purpose:form.visit_purpose, visit_outcome:form.visit_outcome,
         notes:form.notes, gps_lat:position?.latitude??null, gps_lng:position?.longitude??null,
         farmer_phone:"", farm_name:"", sub_county:"", ward:"",
@@ -1936,6 +1936,7 @@ export default function FarmerVisitsPage() {
     mutationFn: async (formData) => {
       const payload = {
         staff:                user.id,
+        org_id:               user.org_id,
         visit_type:           formData.visit_type,
         farmer_name:          formData.contact_name,
         farmer_phone:         formData.contact_phone || "",

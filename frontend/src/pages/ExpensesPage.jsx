@@ -66,6 +66,7 @@ export default function ExpensesPage() {
       Object.entries(form).forEach(([k, v]) => fd.append(k, v));
       fd.append("submitted_by", user.id);
       fd.append("status", "pending");
+      if (user.org_id) fd.append("org_id", user.org_id);
       if (receiptPhoto?.blob) fd.append("receipts", receiptPhoto.blob, `receipt-${Date.now()}.jpg`);
       return pb.collection("ft_expenses").create(fd);
     },
